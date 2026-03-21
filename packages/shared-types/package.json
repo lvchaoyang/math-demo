@@ -1,0 +1,16 @@
+{
+  "name": "@math-demo/shared-types",
+  "version": "1.0.0",
+  "description": "数学试卷解析系统 - 共享类型定义",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0"
+  }
+}

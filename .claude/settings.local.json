@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C /Users/dalabengba/Desktop/math-demo log --oneline)",
+      "Bash(python3 -m pip:*)",
+      "mcp__acp__Edit",
+      "mcp__acp__Write",
+      "Bash(python test_omml_fixes.py)",
+      "Bash(python3:*)"
+    ]
+  }
+}

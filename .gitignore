@@ -1,0 +1,17 @@
+node_modules/
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+.env.local
+.env.*.local
+data/images/
+logs/
+*.log
+.idea/
+.DS_Store
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
