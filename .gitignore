@@ -5,7 +5,7 @@ __pycache__/
 .env
 .env.local
 .env.*.local
-data/images/
+data/
 logs/
 *.log
 .idea/
