@@ -6,7 +6,7 @@ const router = Router();
 router.get('/', async (req, res) => {
   try {
     // 检查 Parser 服务状态
-    const PARSER_URL = process.env.PARSER_URL || 'http://localhost:8001';
+    const PARSER_URL = process.env.PARSER_URL || 'http://localhost:8000';
     const parserHealth = await axios.get(`${PARSER_URL}/health`, { timeout: 5000 });
     
     res.json({

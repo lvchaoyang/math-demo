@@ -32,7 +32,7 @@
           </template>
         </div>
       </div>
-      
+
       <el-upload
         class="upload-area"
         drag
@@ -55,7 +55,7 @@
         </template>
       </el-upload>
     </el-card>
-    
+
     <!-- 解析进度 -->
     <el-card v-if="parsingStatus" class="progress-card">
       <template #header>
@@ -82,7 +82,7 @@
           </el-button>
         </div>
       </template>
-      <div class="html-content" v-html="htmlContent"></div>
+      <div ref="htmlPreviewRef" class="html-content" v-html="htmlContent"></div>
     </el-card>
     
     <!-- 题目列表 -->
@@ -95,6 +95,7 @@
     <!-- 导出面板 -->
     <export-panel
       v-if="selectedQuestions.length > 0"
+      :file-id="currentFileId"
       :selected-count="selectedQuestions.length"
       :selected-ids="selectedQuestionIds"
       @export-success="handleExportSuccess"
@@ -103,7 +104,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Upload, Document, Download } from '@element-plus/icons-vue'
 import QuestionList from '../components/QuestionList/QuestionList.vue'
@@ -118,6 +119,7 @@ const currentFileId = ref('')
 const questions = ref<Question[]>([])
 const selectedQuestions = ref<Question[]>([])
 const htmlContent = ref('')
+const htmlPreviewRef = ref<HTMLElement | null>(null)
 
 const uploadAction = computed(() => '/api/v1/upload')
 
@@ -183,6 +185,24 @@ const startPollingProgress = (fileId: string) => {
           // HTML 模式
           htmlContent.value = data.html
           ElMessage.success('HTML 转换完成')
+
+            // 让新插入的 HTML 也进行 MathJax typeset，避免公式重叠/错位
+            await nextTick()
+            if ((window as any).MathJax && htmlPreviewRef.value) {
+              try {
+                const shouldTypeset =
+                  htmlContent.value.includes('math-inline') ||
+                  htmlContent.value.includes('math-block') ||
+                  htmlContent.value.includes('data-latex') ||
+                  htmlContent.value.includes('$')
+
+                if (shouldTypeset) {
+                  await (window as any).MathJax.typesetPromise([htmlPreviewRef.value])
+                }
+              } catch (e) {
+                console.error('HTML MathJax 渲染失败:', e)
+              }
+            }
         } else {
           // 题目拆分模式
           questions.value = data.questions
@@ -304,9 +324,11 @@ const downloadHtml = () => {
 
 .html-content :deep(img) {
   max-width: 100%;
-  height: auto;
-  display: block;
-  margin: 10px auto;
+  height: 20px;
+  vertical-align: middle;
+  margin: 10px 0;
+  /* display: block; */
+  /* margin: 10px auto; */
 }
 
 .html-content :deep(.formula-image) {

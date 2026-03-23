@@ -5,3 +5,6 @@ pydantic==2.5.0
 python-docx==1.1.0
 lxml==4.9.3
 Pillow==10.2.0
+
+beautifulsoup4==4.12.3
+olefile==0.46

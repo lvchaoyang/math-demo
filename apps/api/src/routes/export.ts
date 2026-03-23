@@ -7,13 +7,13 @@ const router = Router();
 
 // 获取 Parser URL（在运行时读取环境变量）
 function getParserUrl(): string {
-  return process.env.PARSER_URL || 'http://localhost:8001';
+  return process.env.PARSER_URL || 'http://localhost:8000';
 }
 
 // 导出题目
 router.post('/', async (req, res) => {
   try {
-    const { file_id, question_ids, options }: ExportRequest = req.body;
+    const { file_id, question_ids, options, title }: ExportRequest = req.body;
     
     if (!file_id || !question_ids || !Array.isArray(question_ids)) {
       return res.status(400).json({
@@ -27,7 +27,8 @@ router.post('/', async (req, res) => {
     const response = await axios.post(`${parserUrl}/export`, {
       file_id,
       question_ids,
-      options
+      options,
+      title
     }, {
       responseType: 'stream',
       timeout: 60000

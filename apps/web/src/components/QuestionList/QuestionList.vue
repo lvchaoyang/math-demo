@@ -17,7 +17,7 @@
         v-for="question in questions"
         :key="question.id"
         class="question-item"
-        :class="{ 'is-selected': isSelected(question) }"
+        :class="{ 'is-selected': isSelected(question), 'is-low-confidence': question.low_confidence }"
       >
         <div class="question-header">
           <el-checkbox
@@ -26,6 +26,15 @@
           >
             <span class="question-number">第 {{ question.number }} 题</span>
             <el-tag size="small" class="question-type">{{ question.type_name }}</el-tag>
+            <el-tag
+              v-if="question.low_confidence"
+              size="small"
+              type="warning"
+              class="confidence-tag"
+              :title="(question.low_confidence_reasons || []).join('；')"
+            >
+              低置信度
+            </el-tag>
           </el-checkbox>
         </div>
         
@@ -177,6 +186,11 @@ watch(() => props.questions, () => {
   background: #f0f9ff;
 }
 
+.question-item.is-low-confidence {
+  border-color: #e6a23c;
+  background: #fff9eb;
+}
+
 .question-header {
   margin-bottom: 10px;
 }
@@ -188,6 +202,10 @@ watch(() => props.questions, () => {
 
 .question-type {
   margin-left: 10px;
+}
+
+.confidence-tag {
+  margin-left: 8px;
 }
 
 .question-content {

@@ -114,22 +114,62 @@ class DocxToHtmlConverter:
             line-height: 1.6;
             margin: 40px;
             color: #333;
+            text-rendering: optimizeLegibility;
         }
         p {
             margin: 0.5em 0;
         }
-        .formula-image {
-            max-height: 30px;
-            vertical-align: middle;
-            margin: 0 4px;
+        
+        /* 行内公式图片：小尺寸，基线对齐 */
+        .formula-image-inline {
             display: inline-block;
+            vertical-align: -0.1em;
+            max-height: 1.2em;
+            margin: 0 2px;
         }
-        .formula-image-large {
-            max-height: 50px;
-            vertical-align: middle;
-            margin: 4px 0;
+        
+        /* 块级公式图片：独立显示，保持宽高比 */
+        .formula-image-block {
             display: block;
+            margin: 10px auto;
+            max-width: 100%;
+            height: auto;
         }
+        
+        /* 通用公式图片样式（兜底）*/
+        .formula-image {
+            display: inline-block;
+            vertical-align: middle;
+            max-width: 100%;
+            height: auto;
+            margin: 0 2px;
+        }
+        
+        /* 行内公式：严格基线对齐，防止撑大行高 */
+        .math-inline {
+            display: inline-block;
+            vertical-align: -0.1em;
+            max-height: 1.2em;
+            margin: 0 2px;
+        }
+        
+        /* 块级公式：独立段落，居中，增加上下间距 */
+        .math-display {
+            display: block;
+            text-align: center;
+            margin: 1.5em 0;
+            overflow-x: auto;
+            overflow-y: hidden;
+        }
+        
+        /* 针对 WMF 转换后的图片的特殊处理 */
+        .formula-image-large {
+            display: block;
+            margin: 10px auto;
+            max-width: 100%;
+            height: auto;
+        }
+        
         h1, h2, h3, h4, h5, h6 {
             margin: 1em 0 0.5em;
             font-weight: bold;
@@ -171,7 +211,7 @@ class DocxToHtmlConverter:
             align_style = f' text-align: {align};' if align != 'left' else ''
             return f'<p style="margin: 0.5em 0;{align_style}">{content_html}</p>\n'
     
-    def _convert_element_recursive(self, elem: ET.Element) -> str:
+    def _convert_element_recursive(self, elem: ET.Element, is_inside_formula=False) -> str:
         """递归转换元素及其子元素"""
         tag = self._get_tag_name(elem.tag)
         
@@ -180,16 +220,21 @@ class DocxToHtmlConverter:
             self._tag_stats = {}
         self._tag_stats[tag] = self._tag_stats.get(tag, 0) + 1
         
+        # 【关键修复】如果已经在公式内部，忽略内部的 drawing/pict/object，避免重复渲染
+        if is_inside_formula and tag in ['drawing', 'pict', 'object', 'imagedata']:
+            return ""
+        
         # 处理特定标签
         if tag == 'r':
-            return self._convert_run_to_html(elem)
-        elif tag == 'oMath':
+            return self._convert_run_to_html(elem, is_inside_formula=is_inside_formula)
+        elif tag == 'oMath' or tag == 'oMathPara':
             latex = self._parse_omml(elem)
-            return f'<span class="math-inline" data-latex="{self._escape_html(latex)}">${latex}$</span>'
-        elif tag == 'oMathPara':
-            latex = self._parse_omml(elem)
-            return f'<div class="math-block" data-latex="{self._escape_html(latex)}">$${latex}$$</div>'
+            if tag == 'oMathPara':
+                return f'<div class="math-display" data-latex="{self._escape_html(latex)}">$${latex}$$</div>'
+            else:
+                return f'<span class="math-inline" data-latex="{self._escape_html(latex)}">${latex}$</span>'
         elif tag == 'drawing':
+            # 只有不在公式内才尝试转为图片
             return self._convert_drawing_to_html(elem)
         elif tag == 'pict':
             return self._convert_pict_to_html(elem)
@@ -208,44 +253,102 @@ class DocxToHtmlConverter:
         # 对于其他元素，递归处理子元素
         content_parts = []
         for child in elem:
-            child_content = self._convert_element_recursive(child)
+            # 如果当前是 oMath 的子元素，传递 True
+            next_level_formula = is_inside_formula or (tag in ['oMath', 'oMathPara'])
+            child_content = self._convert_element_recursive(child, is_inside_formula=next_level_formula)
             if child_content:
                 content_parts.append(child_content)
         
         return ''.join(content_parts)
     
-    def _convert_run_to_html(self, run_elem: ET.Element) -> str:
+    def _convert_run_to_html(self, run_elem: ET.Element, is_inside_formula=False) -> str:
         """将 Run 元素转换为 HTML"""
-        text_parts = []
+        content_parts = []
+        has_formula_image = False
         
         for child in run_elem:
             tag = self._get_tag_name(child.tag)
             
             if tag == 't':
                 text = child.text or ''
-                text_parts.append(self._escape_html(text))
+                content_parts.append(('text', self._escape_html(text)))
             elif tag == 'tab':
-                text_parts.append('&nbsp;&nbsp;&nbsp;&nbsp;')
+                content_parts.append(('text', '&nbsp;&nbsp;&nbsp;&nbsp;'))
             elif tag == 'br':
-                text_parts.append('<br/>')
+                content_parts.append(('text', '<br/>'))
             elif tag == 'drawing':
-                text_parts.append(self._convert_drawing_to_html(child))
+                if not is_inside_formula:
+                    img_html = self._convert_drawing_to_html(child)
+                    if img_html:
+                        content_parts.append(('image', img_html))
+                        has_formula_image = True
             elif tag == 'pict':
-                text_parts.append(self._convert_pict_to_html(child))
+                if not is_inside_formula:
+                    img_html = self._convert_pict_to_html(child)
+                    if img_html:
+                        content_parts.append(('image', img_html))
+                        has_formula_image = True
             elif tag == 'object':
-                text_parts.append(self._convert_ole_to_html(child))
+                if not is_inside_formula:
+                    obj_html = self._convert_ole_to_html(child)
+                    if obj_html:
+                        content_parts.append(('image', obj_html))
+                        has_formula_image = True
             elif tag == 'imagedata':
-                text_parts.append(self._convert_imagedata_to_html(child))
+                if not is_inside_formula:
+                    img_html = self._convert_imagedata_to_html(child)
+                    if img_html:
+                        content_parts.append(('image', img_html))
+                        has_formula_image = True
             else:
                 # 对于其他标签，递归处理
-                child_content = self._convert_element_recursive(child)
+                next_level_formula = is_inside_formula or (tag in ['oMath', 'oMathPara'])
+                child_content = self._convert_element_recursive(child, is_inside_formula=next_level_formula)
                 if child_content:
-                    text_parts.append(child_content)
+                    content_parts.append(('other', child_content))
         
-        content = ''.join(text_parts)
-        
-        if not content:
+        if not content_parts:
             return ''
+        
+        # 如果包含公式图片，不要应用 run 样式到图片上
+        if has_formula_image:
+            result_parts = []
+            for item_type, content in content_parts:
+                if item_type == 'image':
+                    # 图片直接输出，不包裹 span
+                    result_parts.append(content)
+                elif item_type == 'text':
+                    result_parts.append(content)
+                else:
+                    result_parts.append(content)
+            
+            content = ''.join(result_parts)
+            
+            # 如果还有文本内容，才应用样式
+            r_pr = run_elem.find('w:rPr', self.NAMESPACES)
+            if r_pr is not None:
+                styles = []
+                
+                if r_pr.find('w:b', self.NAMESPACES) is not None:
+                    styles.append('font-weight: bold')
+                if r_pr.find('w:i', self.NAMESPACES) is not None:
+                    styles.append('font-style: italic')
+                if r_pr.find('w:u', self.NAMESPACES) is not None:
+                    styles.append('text-decoration: underline')
+                
+                if styles:
+                    # 只包裹文本内容，不包裹图片
+                    text_content = ''.join([c for t, c in content_parts if t == 'text'])
+                    image_content = ''.join([c for t, c in content_parts if t == 'image'])
+                    other_content = ''.join([c for t, c in content_parts if t == 'other'])
+                    
+                    if text_content or other_content:
+                        return f'{image_content}<span style="{"; ".join(styles)}">{text_content}{other_content}</span>'
+                    else:
+                        return image_content
+        
+        # 没有图片，正常处理
+        content = ''.join([c for t, c in content_parts])
         
         r_pr = run_elem.find('w:rPr', self.NAMESPACES)
         if r_pr is not None:
@@ -404,11 +507,19 @@ class DocxToHtmlConverter:
             
             if file_ext in {'.wmf', '.emf'}:
                 base64_data = self._convert_wmf_to_base64(content)
+                if not base64_data:
+                    # WMF 转换失败，使用原始 WMF 作为兜底
+                    logger.warning(f"WMF 转换失败，使用原始 WMF: {target}")
+                    base64_wmf = base64.b64encode(content).decode('utf-8')
+                    base64_data = f"data:image/wmf;base64,{base64_wmf}"
+                # WMF 图片使用块级样式
+                img_class = "formula-image-block"
             else:
                 mime_type = self._get_mime_type(file_ext)
                 base64_data = f"data:{mime_type};base64,{base64.b64encode(content).decode('utf-8')}"
+                img_class = "formula-image"
             
-            img_html = f'<img src="{base64_data}" class="formula-image" alt="formula" />'
+            img_html = f'<img src="{base64_data}" class="{img_class}" alt="formula" />'
             self.media_cache[target] = img_html
             return img_html
             

@@ -41,6 +41,7 @@ export interface UploadResponse {
 export interface ExportRequest {
   file_id: string;
   question_ids: string[];
+  title?: string;
   options: {
     include_answer: boolean;
     include_analysis: boolean;

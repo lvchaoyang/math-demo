@@ -482,8 +482,10 @@ class QuestionSplitter:
     def _paragraph_to_html(self, para: Dict) -> str:
         """将段落转换为 HTML"""
         parts = []
-        
-        for item in para.get('content_items', []):
+        content_items = para.get('content_items', [])
+        only_images = bool(content_items) and all(i.get('type') == 'image' for i in content_items)
+
+        for item in content_items:
             item_type = item['type']
             content = item['content']
             
@@ -508,7 +510,9 @@ class QuestionSplitter:
                     img_src = content.get('filename', '')
                     if parts and not parts[-1].endswith(' '):
                         parts.append(' ')
-                    parts.append(self._format_image(img_src, 'formula-image'))
+                    # 纯“公式段落”里的图片统一当作块级，避免行内布局挤压。
+                    css_class = 'formula-image-block' if only_images else 'formula-image'
+                    parts.append(self._format_image(img_src, css_class))
         
         result = ''.join(parts)
         result = re.sub(r' +', ' ', result)
@@ -523,20 +527,24 @@ class QuestionSplitter:
     
     def _format_inline_formula(self, latex: str) -> str:
         """格式化行内公式"""
-        latex = latex.strip()
-        return f'<span class="math-inline" data-latex="{self._escape_html(latex)}">${latex}$</span>'
+        latex = (latex or '').strip()
+        latex_escaped = self._escape_html(latex)
+        # 注意：这里必须同时对 data-latex 和 innerText 做 HTML 转义，
+        # 否则 latex 内如果包含 < 或 & 会破坏 DOM，导致 MathJax 渲染错位/重叠。
+        return f'<span class="math-inline" data-latex="{latex_escaped}">${latex_escaped}$</span>'
     
     def _format_block_formula(self, latex: str) -> str:
         """格式化块级公式"""
-        latex = latex.strip()
-        return f'<div class="math-block" data-latex="{self._escape_html(latex)}">$${latex}$$</div>'
+        latex = (latex or '').strip()
+        latex_escaped = self._escape_html(latex)
+        return f'<div class="math-block" data-latex="{latex_escaped}">$$${latex_escaped}$$</div>'
     
     def _format_image(self, filename: str, css_class: str, alt: str = '') -> str:
         """格式化图片标签"""
         if self.file_id:
-            img_src = f"http://localhost:3000/api/v1/images/{self.file_id}/{filename}"
+            img_src = f"/api/v1/images/{self.file_id}/{filename}"
         else:
-            img_src = f"http://localhost:3000/api/v1/images/{filename}"
+            img_src = f"/api/v1/images/{filename}"
         
         alt_attr = f' alt="{alt}"' if alt else ''
         return f'<img src="{img_src}" class="{css_class}"{alt_attr} />'

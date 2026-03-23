@@ -62,6 +62,7 @@ import { ElMessage } from 'element-plus'
 import { Download } from '@element-plus/icons-vue'
 
 interface Props {
+  fileId: string
   selectedCount: number
   selectedIds: string[]
 }
@@ -97,34 +98,51 @@ const handleExport = async () => {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
+        file_id: props.fileId,
         question_ids: props.selectedIds,
         title: exportForm.title,
-        watermark: exportForm.watermark || undefined,
-        include_answer: exportForm.includeAnswer,
-        include_analysis: exportForm.includeAnalysis,
-        paper_size: exportForm.paperSize
+        options: {
+          include_answer: exportForm.includeAnswer,
+          include_analysis: exportForm.includeAnalysis,
+          watermark: exportForm.watermark?.trim() || undefined
+        }
       })
     })
-    
-    const data = await response.json()
-    
-    if (data.success) {
-      // 触发下载
-      const downloadLink = document.createElement('a')
-      downloadLink.href = data.download_url
-      downloadLink.download = '导出的题目.docx'
-      document.body.appendChild(downloadLink)
-      downloadLink.click()
-      document.body.removeChild(downloadLink)
-      
-      ElMessage.success('导出成功')
-      emit('export-success')
-    } else {
-      ElMessage.error(data.message || '导出失败')
+
+    if (!response.ok) {
+      let message = '导出失败'
+      try {
+        const data = await response.json()
+        message = data?.message || message
+      } catch {
+        // ignore
+      }
+      throw new Error(message)
     }
+
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+
+    const disposition = response.headers.get('content-disposition') || ''
+    let filename = '导出的题目.docx'
+    const match = disposition.match(/filename\*?=(?:UTF-8''|")?([^;"]+)/i)
+    if (match && match[1]) {
+      filename = decodeURIComponent(match[1].trim())
+    }
+
+    const downloadLink = document.createElement('a')
+    downloadLink.href = url
+    downloadLink.download = filename
+    document.body.appendChild(downloadLink)
+    downloadLink.click()
+    document.body.removeChild(downloadLink)
+    URL.revokeObjectURL(url)
+
+    ElMessage.success('导出成功')
+    emit('export-success')
   } catch (error) {
     console.error('导出失败:', error)
-    ElMessage.error('导出失败，请稍后重试')
+    ElMessage.error(error instanceof Error ? error.message : '导出失败，请稍后重试')
   } finally {
     exporting.value = false
   }

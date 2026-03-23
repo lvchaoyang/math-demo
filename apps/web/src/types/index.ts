@@ -15,6 +15,7 @@ export interface Option {
   label: string
   content: string
   is_latex: boolean
+  content_html?: string
 }
 
 // 题目
@@ -32,6 +33,9 @@ export interface Question {
   difficulty?: string
   images: string[]
   latex_formulas: string[]
+  confidence_score?: number
+  low_confidence?: boolean
+  low_confidence_reasons?: string[]
 }
 
 // 上传响应

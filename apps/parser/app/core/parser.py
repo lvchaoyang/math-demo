@@ -142,7 +142,9 @@ class DocxParser:
                 is_wmf = file_ext in {'.wmf', '.emf'}
 
                 if is_wmf:
-                    new_filename = f"{file_id}_{Path(original_filename).stem}.png"
+                    # 解析阶段不再强制转换 WMF，直接保留原始文件。
+                    # 原因：批量转换失败率高且耗时长，最终由 API 图片路由按需转换更稳定。
+                    new_filename = f"{file_id}_{original_filename}"
                 else:
                     new_filename = f"{file_id}_{original_filename}"
 
@@ -153,27 +155,8 @@ class DocxParser:
                         content = src.read()
 
                     if is_wmf:
-                        temp_wmf_path = output_path / f"temp_{file_id}_{original_filename}"
-                        with open(temp_wmf_path, 'wb') as f:
-                            f.write(content)
-
-                        success, result = wmf_converter.convert(
-                            str(temp_wmf_path),
-                            str(output_file)
-                        )
-
-                        if success:
-                            print(f"WMF 转换成功: {original_filename} -> {new_filename}")
-                            if temp_wmf_path.exists():
-                                temp_wmf_path.unlink()
-                        else:
-                            print(f"WMF 转换失败: {result}，保存原始 WMF 文件")
-                            wmf_output_file = output_path / f"{file_id}_{original_filename}"
-                            with open(wmf_output_file, 'wb') as f:
-                                f.write(content)
-                            new_filename = f"{file_id}_{original_filename}"
-                            if temp_wmf_path.exists():
-                                temp_wmf_path.unlink()
+                        with open(output_file, 'wb') as dst:
+                            dst.write(content)
                     else:
                         with open(output_file, 'wb') as dst:
                             dst.write(content)

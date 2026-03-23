@@ -12,7 +12,7 @@ from docx.shared import Pt, Inches, RGBColor, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
 from docx.enum.style import WD_STYLE_TYPE
 from docx.oxml.ns import qn, nsmap
-from docx.oxml import OxmlElement
+from docx.oxml import OxmlElement, parse_xml
 
 from .splitter import Question
 
@@ -28,8 +28,9 @@ class WordExporter:
     
     def __init__(self):
         self.document = None
+        self.image_dir: Optional[Path] = None
         
-    def create_document(self, title: str = "", watermark_text: str = None) -> Document:
+    def create_document(self, title: str = "", watermark_text: str = None, image_dir: Optional[str] = None) -> Document:
         """
         创建新文档
         
@@ -41,6 +42,7 @@ class WordExporter:
             Document 对象
         """
         self.document = Document()
+        self.image_dir = Path(image_dir) if image_dir else None
         
         # 设置默认字体
         self._set_default_font()
@@ -137,9 +139,12 @@ class WordExporter:
         run = paragraph.add_run()
         
         # 解析并插入水印 XML
-        watermark_elem = OxmlElement('w:r')
-        watermark_elem.append(OxmlElement.fromstring(watermark_xml))
-        paragraph._p.append(watermark_elem)
+        # python-docx 没有 OxmlElement.fromstring，这里使用 parse_xml。
+        try:
+            paragraph._p.append(parse_xml(watermark_xml))
+        except Exception:
+            # 水印失败不应阻断导出主流程
+            pass
         
     def add_question(self, question: Question, include_answer: bool = False, 
                      include_analysis: bool = False):
@@ -159,6 +164,7 @@ class WordExporter:
         
         # 题目内容
         self._add_formatted_text(para, question.content)
+        self._add_question_images(question.images)
         
         # 选项（选择题）
         if question.options:
@@ -184,6 +190,43 @@ class WordExporter:
             
         # 添加空行
         self.document.add_paragraph()
+
+    def _resolve_image_path(self, filename: str) -> Optional[Path]:
+        """解析图片在本地磁盘中的真实路径"""
+        if not self.image_dir:
+            return None
+
+        # 支持 filename 中可能带有 media/ 前缀
+        candidates = [
+            self.image_dir / filename,
+            self.image_dir / "media" / filename,
+        ]
+        if filename.startswith("media/"):
+            candidates.append(self.image_dir / filename.replace("media/", "", 1))
+
+        for p in candidates:
+            if p.exists() and p.is_file():
+                return p
+        return None
+
+    def _add_question_images(self, images: List[str]):
+        """将题目关联图片插入到文档"""
+        if not images:
+            return
+
+        # 去重但保序，避免同图重复写入
+        deduped = list(dict.fromkeys(images))
+        for img in deduped:
+            img_path = self._resolve_image_path(img)
+            if not img_path:
+                continue
+            try:
+                p = self.document.add_paragraph()
+                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                p.add_run().add_picture(str(img_path), width=Inches(5.8))
+            except Exception:
+                # 单张图失败不影响整份文档导出
+                continue
         
     def _add_formatted_text(self, paragraph, text: str):
         """添加格式化文本（处理 LaTeX 公式）"""
@@ -248,6 +291,7 @@ class WordExporter:
 
 def export_questions(questions: List[Question], output_path: str, 
                      title: str = "", watermark: str = None,
+                     image_dir: Optional[str] = None,
                      include_answer: bool = False, 
                      include_analysis: bool = False) -> str:
     """
@@ -265,7 +309,7 @@ def export_questions(questions: List[Question], output_path: str,
         输出文件路径
     """
     exporter = WordExporter()
-    exporter.create_document(title=title, watermark_text=watermark)
+    exporter.create_document(title=title, watermark_text=watermark, image_dir=image_dir)
     
     # 按题型分组
     current_type = None
