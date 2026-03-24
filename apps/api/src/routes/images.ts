@@ -18,9 +18,11 @@ const RSVG_CONVERT_CMD = process.env.RSVG_CONVERT_PATH || 'rsvg-convert';
 const MAGICK_CMD = process.env.MAGICK_PATH || 'magick';
 const INKSCAPE_CMD = process.env.INKSCAPE_PATH || 'inkscape';
 const CONVERT_TIMEOUT_MS = Number(process.env.IMAGE_CONVERT_TIMEOUT_MS || 12000);
+const WMF_CACHE_VERSION = 'v2';
 
 type CommandResult = {
   code: number | null;
+  stdout: string;
   stderr: string;
   error?: string;
   timedOut: boolean;
@@ -29,14 +31,19 @@ type CommandResult = {
 function runCommandWithTimeout(cmd: string, args: string[], timeoutMs: number): Promise<CommandResult> {
   return new Promise((resolve) => {
     const child = spawn(cmd, args);
+    let stdout = '';
     let stderr = '';
     let settled = false;
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
       child.kill('SIGKILL');
-      resolve({ code: null, stderr, timedOut: true, error: `timeout after ${timeoutMs}ms` });
+      resolve({ code: null, stdout, stderr, timedOut: true, error: `timeout after ${timeoutMs}ms` });
     }, timeoutMs);
+
+    child.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
 
     child.stderr.on('data', (data) => {
       stderr += data.toString();
@@ -46,14 +53,14 @@ function runCommandWithTimeout(cmd: string, args: string[], timeoutMs: number): 
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve({ code, stderr, timedOut: false });
+      resolve({ code, stdout, stderr, timedOut: false });
     });
 
     child.on('error', (err) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve({ code: null, stderr, timedOut: false, error: String(err) });
+      resolve({ code: null, stdout, stderr, timedOut: false, error: String(err) });
     });
   });
 }
@@ -113,7 +120,65 @@ type ConversionResult = {
   outputPath: string;
   error?: string;
   size?: number;
+  fillRatio?: number;
+  normalized?: boolean;
 };
+
+async function getImageSize(imagePath: string): Promise<{ width: number; height: number } | null> {
+  const result = await runCommandWithTimeout(
+    MAGICK_CMD,
+    ['identify', '-format', '%w %h', imagePath],
+    CONVERT_TIMEOUT_MS
+  );
+  if (result.code !== 0) return null;
+  const parts = result.stdout.trim().split(/\s+/);
+  if (parts.length !== 2) return null;
+  const width = Number(parts[0]);
+  const height = Number(parts[1]);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
+  return { width, height };
+}
+
+async function getTrimmedSize(imagePath: string): Promise<{ width: number; height: number } | null> {
+  const result = await runCommandWithTimeout(
+    MAGICK_CMD,
+    ['convert', imagePath, '-trim', '+repage', '-format', '%w %h', 'info:'],
+    CONVERT_TIMEOUT_MS
+  );
+  if (result.code !== 0) return null;
+  const parts = result.stdout.trim().split(/\s+/);
+  if (parts.length !== 2) return null;
+  const width = Number(parts[0]);
+  const height = Number(parts[1]);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
+  return { width, height };
+}
+
+async function normalizeFormulaPng(imagePath: string): Promise<{ applied: boolean; fillRatio?: number }> {
+  const original = await getImageSize(imagePath);
+  const trimmed = await getTrimmedSize(imagePath);
+  if (!original || !trimmed) return { applied: false };
+
+  const fillRatio = trimmed.width / original.width;
+  const heightRatio = trimmed.height / original.height;
+  if (fillRatio >= 0.72 || heightRatio < 0.45) {
+    return { applied: false, fillRatio };
+  }
+
+  const tempPath = imagePath.replace(/\.png$/i, '.normalized.png');
+  const normalize = await runCommandWithTimeout(
+    MAGICK_CMD,
+    ['convert', imagePath, '-trim', '+repage', tempPath],
+    CONVERT_TIMEOUT_MS
+  );
+  if (normalize.code === 0 && fs.existsSync(tempPath)) {
+    fs.copyFileSync(tempPath, imagePath);
+    fs.unlinkSync(tempPath);
+    return { applied: true, fillRatio };
+  }
+  if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+  return { applied: false, fillRatio };
+}
 
 async function convertWmfBestEffort(wmfPath: string, finalPngPath: string): Promise<ConversionResult> {
   ensureCacheDir();
@@ -131,7 +196,11 @@ async function convertWmfBestEffort(wmfPath: string, finalPngPath: string): Prom
       const res = await c.run(wmfPath, c.out);
       if (res.success && fs.existsSync(c.out)) {
         const stat = fs.statSync(c.out);
-        ok.push({ success: true, method: c.method, outputPath: c.out, size: stat.size });
+        const original = await getImageSize(c.out);
+        const trimmed = await getTrimmedSize(c.out);
+        let fillRatio: number | undefined = undefined;
+        if (original && trimmed) fillRatio = trimmed.width / original.width;
+        ok.push({ success: true, method: c.method, outputPath: c.out, size: stat.size, fillRatio });
       } else {
         errors.push(`${c.method}: ${res.error || 'failed'}`);
       }
@@ -144,10 +213,20 @@ async function convertWmfBestEffort(wmfPath: string, finalPngPath: string): Prom
     return { success: false, method: 'none', outputPath: finalPngPath, error: errors.join(' | ') };
   }
 
-  // 经验规则：文件体积更大的渲染通常细节保留更好
-  ok.sort((a, b) => (b.size || 0) - (a.size || 0));
+  // 先看内容宽度利用率，再看文件体积
+  ok.sort((a, b) => {
+    const fillA = a.fillRatio ?? 0;
+    const fillB = b.fillRatio ?? 0;
+    if (Math.abs(fillB - fillA) > 0.03) return fillB - fillA;
+    return (b.size || 0) - (a.size || 0);
+  });
   const winner = ok[0];
   fs.copyFileSync(winner.outputPath, finalPngPath);
+  const normalized = await normalizeFormulaPng(finalPngPath);
+  if (normalized.applied) {
+    winner.normalized = true;
+    winner.fillRatio = normalized.fillRatio;
+  }
 
   for (const c of ok) {
     if (c.outputPath !== winner.outputPath && fs.existsSync(c.outputPath)) {
@@ -155,7 +234,14 @@ async function convertWmfBestEffort(wmfPath: string, finalPngPath: string): Prom
     }
   }
 
-  return { success: true, method: winner.method, outputPath: finalPngPath, size: winner.size };
+  return {
+    success: true,
+    method: winner.method,
+    outputPath: finalPngPath,
+    size: winner.size,
+    fillRatio: winner.fillRatio,
+    normalized: winner.normalized
+  };
 }
 
 router.get('/:fileId/:imageName(*)', async (req, res) => {
@@ -196,7 +282,7 @@ router.get('/:fileId/:imageName(*)', async (req, res) => {
       ensureCacheDir();
       // 移除 media/ 前缀，避免文件路径问题
       const sanitizedImageName = imageName.replace(/^media\//, '');
-      const cacheKey = `${fileId}_${sanitizedImageName}`.replace(/\.(wmf|emf)$/i, '.png');
+      const cacheKey = `${fileId}_${sanitizedImageName}.${WMF_CACHE_VERSION}`.replace(/\.(wmf|emf)\./i, '.png.');
       const cachedPngPath = path.join(CACHE_DIR, cacheKey);
       
       if (fs.existsSync(cachedPngPath)) {
@@ -207,7 +293,7 @@ router.get('/:fileId/:imageName(*)', async (req, res) => {
       const result = await convertWmfBestEffort(imagePath, cachedPngPath);
       
       if (result.success && fs.existsSync(cachedPngPath)) {
-        logger.info(`WMF converted by ${result.method}: ${sanitizedImageName}`);
+        logger.info(`WMF converted by ${result.method}${result.normalized ? ' + normalized' : ''}: ${sanitizedImageName}`);
         // logger.info(`Serving converted PNG: ${cachedPngPath}`);
         return res.sendFile(cachedPngPath);
       }

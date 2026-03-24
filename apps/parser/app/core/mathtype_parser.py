@@ -18,6 +18,8 @@ class MathTypeParser:
     """MathType 公式解析器"""
     
     MTEF_SIGNATURE = b'DSMT'
+    WMF_SIGNATURE = b'\xd7\xcd\xc6\x9a'
+    EMF_SIGNATURE = b'\x20\x45\x4d\x46'
     
     def __init__(self):
         self.temp_dir = None
@@ -172,46 +174,86 @@ class MathTypeParser:
         try:
             ole = olefile.OleFileIO(ole_path)
             
-            # 查找 WMF 数据
-            wmf_data = None
+            # 查找 WMF/EMF 数据
+            metafile_data = None
+            metafile_ext = '.wmf'
             for stream in ole.listdir():
                 stream_name = '/'.join(stream)
-                if 'WMF' in stream_name or 'Picture' in stream_name:
-                    wmf_data = ole.openstream(stream).read()
+                try:
+                    stream_data = ole.openstream(stream).read()
+                except Exception:
+                    continue
+                if 'WMF' in stream_name.upper():
+                    metafile_data = stream_data
+                    metafile_ext = '.wmf'
                     break
+                if 'EMF' in stream_name.upper():
+                    metafile_data = stream_data
+                    metafile_ext = '.emf'
+                    break
+                if 'PICTURE' in stream_name.upper() or 'OLEPRES' in stream_name.upper():
+                    found_data, found_ext = self._extract_metafile_from_bytes(stream_data)
+                    if found_data:
+                        metafile_data = found_data
+                        metafile_ext = found_ext
+                        break
+
+            if not metafile_data:
+                for stream in ole.listdir():
+                    try:
+                        stream_data = ole.openstream(stream).read()
+                    except Exception:
+                        continue
+                    found_data, found_ext = self._extract_metafile_from_bytes(stream_data)
+                    if found_data:
+                        metafile_data = found_data
+                        metafile_ext = found_ext
+                        break
             
             ole.close()
             
-            if not wmf_data:
-                return False, "OLE 对象中没有找到 WMF 预览图"
+            if not metafile_data:
+                return False, "OLE 对象中没有找到 WMF/EMF 预览图"
             
-            # 保存 WMF 文件
-            temp_wmf = output_path.replace('.png', '.wmf')
-            with open(temp_wmf, 'wb') as f:
-                f.write(wmf_data)
+            # 保存 WMF/EMF 文件
+            temp_meta = output_path.replace('.png', metafile_ext)
+            with open(temp_meta, 'wb') as f:
+                f.write(metafile_data)
             
             # 使用 Inkscape 转换
             if shutil.which('inkscape'):
                 cmd = [
                     'inkscape',
-                    temp_wmf,
+                    temp_meta,
                     '--export-filename', output_path,
                     '--export-type', 'png',
                     '--export-dpi', str(dpi)
                 ]
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
                 
-                Path(temp_wmf).unlink()
+                Path(temp_meta).unlink()
                 
                 if result.returncode == 0 and Path(output_path).exists():
-                    logger.info(f"WMF 预览图转换成功: {Path(ole_path).name}")
+                    logger.info(f"{metafile_ext.upper()} 预览图转换成功: {Path(ole_path).name}")
                     return True, output_path
             
-            Path(temp_wmf).unlink()
-            return False, "WMF 转换失败"
+            Path(temp_meta).unlink()
+            return False, "WMF/EMF 转换失败"
             
         except Exception as e:
             return False, f"提取 WMF 预览图失败: {e}"
+
+    def _extract_metafile_from_bytes(self, data: bytes) -> Tuple[Optional[bytes], str]:
+        """从二进制流里定位 WMF/EMF 数据"""
+        if not data:
+            return None, '.wmf'
+        wmf_pos = data.find(self.WMF_SIGNATURE)
+        if wmf_pos >= 0:
+            return data[wmf_pos:], '.wmf'
+        emf_pos = data.find(self.EMF_SIGNATURE)
+        if emf_pos >= 0:
+            return data[emf_pos:], '.emf'
+        return None, '.wmf'
     
     def extract_latex(self, ole_path: str) -> Optional[str]:
         """
