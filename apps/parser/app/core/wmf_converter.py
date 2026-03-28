@@ -17,10 +17,41 @@ class WMFConverter:
     """WMF 文件转换器"""
     
     def __init__(self):
+        self.gdi_exe: Optional[str] = None
         self.converter = self._detect_converter()
+    
+    @staticmethod
+    def _find_gdi_render_exe() -> Optional[Path]:
+        """Windows：仓库内或环境变量中的 WmfGdiRender.exe（与 Node 图片路由一致）"""
+        env = (os.environ.get('WMF_GDI_RENDER_EXE') or '').strip()
+        if env:
+            p = Path(env)
+            if p.is_file():
+                return p
+        if os.name != 'nt':
+            return None
+        here = Path(__file__).resolve()
+        rels = (
+            'tools/wmf-gdi-render/bin/Release/net8.0-windows/WmfGdiRender.exe',
+            'tools/wmf-gdi-render/bin/Debug/net8.0-windows/WmfGdiRender.exe',
+        )
+        for root in here.parents:
+            for rel in rels:
+                cand = root / rel
+                if cand.is_file():
+                    return cand
+        return None
     
     def _detect_converter(self) -> Optional[str]:
         """检测可用的转换工具"""
+        # Windows 优先 GDI+（浏览器无法显示内嵌 data:image/wmf）
+        if os.name == 'nt':
+            gdi = self._find_gdi_render_exe()
+            if gdi:
+                self.gdi_exe = str(gdi)
+                logger.info('检测到 WmfGdiRender.exe (GDI+)')
+                return 'gdi_render'
+        
         # 优先使用 Inkscape（跨平台，效果好）
         if shutil.which('inkscape'):
             logger.info("检测到 Inkscape 工具")
@@ -74,6 +105,9 @@ class WMFConverter:
         if self.converter == 'sips':
             return self._convert_with_sips(str(input_path), str(output_path))
         
+        if self.converter == 'gdi_render' and self.gdi_exe:
+            return self._convert_with_gdi_render(str(input_path), str(output_path))
+        
         converters = {
             'inkscape': self._convert_with_inkscape,
             'libreoffice': self._convert_with_libreoffice,
@@ -87,6 +121,25 @@ class WMFConverter:
             return converter_func(str(input_path), str(output_path))
         
         return False, "未知的转换工具"
+    
+    def _convert_with_gdi_render(self, input_path: str, output_path: str) -> Tuple[bool, str]:
+        """使用 tools/wmf-gdi-render 的 WmfGdiRender.exe（仅 Windows）"""
+        try:
+            exe = self.gdi_exe or ''
+            if not exe or not Path(exe).is_file():
+                return False, 'WmfGdiRender.exe 不可用'
+            cmd = [exe, input_path, output_path, '--dpi', '220']
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
+            if result.returncode == 0 and Path(output_path).exists():
+                logger.info(f'GDI+ 转换成功: {Path(input_path).name}')
+                return True, output_path
+            err = (result.stderr or result.stdout or '').strip()
+            return False, err or 'GDI+ 转换失败'
+        except subprocess.TimeoutExpired:
+            return False, 'GDI+ 转换超时'
+        except Exception as e:
+            logger.error(f'GDI+ 转换异常: {e}')
+            return False, str(e)
     
     def _convert_with_sips(self, input_path: str, output_path: str) -> Tuple[bool, str]:
         """使用 macOS sips 命令转换（通过预览）"""

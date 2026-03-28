@@ -17,7 +17,9 @@ export interface Question {
 export interface Option {
   label: string;
   content: string;
+  content_html?: string;
   is_latex: boolean;
+  images?: string[];
 }
 
 export interface ParseProgress {

@@ -4,10 +4,10 @@
   "description": "数学试卷解析系统 - Monorepo",
   "private": true,
   "scripts": {
-    "dev": "concurrently \"pnpm dev:web\" \"pnpm dev:api\" \"pnpm dev:parser\"",
+    "dev": "node scripts/prep-dev.mjs && concurrently \"pnpm dev:web\" \"pnpm dev:api\" \"pnpm dev:parser\"",
     "dev:web": "pnpm --filter @math-demo/web dev",
     "dev:api": "pnpm --filter @math-demo/api dev",
-    "dev:parser": "cd apps/parser && python3 main.py",
+    "dev:parser": "node scripts/dev-parser.mjs",
     "build": "pnpm -r build",
     "build:web": "pnpm --filter @math-demo/web build",
     "build:api": "pnpm --filter @math-demo/api build",
@@ -16,7 +16,8 @@
     "test": "pnpm -r test",
     "docker:up": "docker-compose up -d",
     "docker:down": "docker-compose down",
-    "docker:build": "docker-compose build"
+    "docker:build": "docker-compose build",
+    "build:wmf-gdi": "dotnet build tools/wmf-gdi-render/WmfGdiRender.csproj -c Release"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

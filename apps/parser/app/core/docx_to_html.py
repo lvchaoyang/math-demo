@@ -17,6 +17,19 @@ from .wmf_converter import WMFConverter
 
 logger = logging.getLogger(__name__)
 
+# 浏览器不支持 data:image/wmf；转换失败时用 SVG 占位，避免裂图
+_WMF_FALLBACK_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="56" height="18">'
+    '<rect fill="#f0f0f0" stroke="#ccc" width="100%" height="100%" rx="3"/>'
+    '<text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" '
+    'font-size="10" fill="#666">公式</text></svg>'
+)
+
+
+def _wmf_unsupported_placeholder_uri() -> str:
+    b64 = base64.b64encode(_WMF_FALLBACK_SVG.encode('utf-8')).decode('ascii')
+    return f'data:image/svg+xml;base64,{b64}'
+
 
 class DocxToHtmlConverter:
     """Word 文档转 HTML 转换器"""
@@ -506,12 +519,11 @@ class DocxToHtmlConverter:
             file_ext = Path(target).suffix.lower()
             
             if file_ext in {'.wmf', '.emf'}:
-                base64_data = self._convert_wmf_to_base64(content)
+                base64_data = self._convert_wmf_to_base64(content, file_ext)
                 if not base64_data:
-                    # WMF 转换失败，使用原始 WMF 作为兜底
-                    logger.warning(f"WMF 转换失败，使用原始 WMF: {target}")
-                    base64_wmf = base64.b64encode(content).decode('utf-8')
-                    base64_data = f"data:image/wmf;base64,{base64_wmf}"
+                    # 勿使用 data:image/wmf — 主流浏览器无法渲染
+                    logger.warning(f"WMF/EMF 转 PNG 失败，使用占位图: {target}")
+                    base64_data = _wmf_unsupported_placeholder_uri()
                 # WMF 图片使用块级样式
                 img_class = "formula-image-block"
             else:
@@ -527,18 +539,19 @@ class DocxToHtmlConverter:
             logger.error(f"获取图片失败: {e}")
             return ''
     
-    def _convert_wmf_to_base64(self, wmf_content: bytes) -> str:
-        """将 WMF 内容转换为 base64 PNG"""
+    def _convert_wmf_to_base64(self, wmf_content: bytes, file_ext: str = '.wmf') -> str:
+        """将 WMF/EMF 内容转换为 base64 PNG（GDI+/Inkscape 等，扩展名需与内容一致）"""
         try:
-            with tempfile.NamedTemporaryFile(suffix='.wmf', delete=False) as temp_wmf:
-                temp_wmf.write(wmf_content)
-                temp_wmf_path = temp_wmf.name
+            ext = '.emf' if (file_ext or '').lower() == '.emf' else '.wmf'
+            with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+                tmp.write(wmf_content)
+                temp_meta_path = tmp.name
             
-            temp_png_path = temp_wmf_path.replace('.wmf', '.png')
+            temp_png_path = str(Path(temp_meta_path).with_suffix('.png'))
             
-            success, result = self.wmf_converter.convert(temp_wmf_path, temp_png_path)
+            success, result = self.wmf_converter.convert(temp_meta_path, temp_png_path)
             
-            Path(temp_wmf_path).unlink()
+            Path(temp_meta_path).unlink(missing_ok=True)
             
             if success and Path(temp_png_path).exists():
                 with open(temp_png_path, 'rb') as f:

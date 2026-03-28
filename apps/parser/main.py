@@ -6,11 +6,12 @@ Python 解析服务 - 核心解析层
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.responses import FileResponse, JSONResponse
 from pathlib import Path
+import os
 import shutil
 import uuid
 
 from app.core.parser import parse_docx
-from app.core.splitter import split_questions
+from app.core.splitter import split_questions, question_from_dict
 from app.core.docx_to_html import convert_docx_to_html
 from app.core.exporter import export_questions as export_questions_to_word
 
@@ -181,7 +182,9 @@ async def parse_document_v2(file: UploadFile = File(...), mode: str = Form("ques
             if not success:
                 raise Exception(f"解析失败：{error}")
             
-            html_content = result.get('html_content', '')
+            html_content = result.get('html_content', '') or ''
+            if not html_content.strip():
+                html_content = convert_docx_to_html(str(file_path))
             
             return {
                 "success": True,
@@ -329,30 +332,48 @@ async def export_questions(data: dict):
     if not file_id or not isinstance(question_ids, list) or len(question_ids) == 0:
         raise HTTPException(status_code=400, detail="参数错误: 需要 file_id 和 question_ids")
 
-    # 找到上传的原始 docx 文件
-    candidates = sorted(list(UPLOAD_DIR.glob(f"{file_id}_*.docx")))
-    if not candidates:
-        raise HTTPException(status_code=404, detail="未找到原始上传文件")
-    docx_path = candidates[0]
-
-    # 重新解析并拆题，保证 question_id 可匹配
+    questions_payload = data.get("questions")
+    selected_questions = []
     image_dir = IMAGES_DIR / file_id
     image_dir.mkdir(parents=True, exist_ok=True)
-    result = parse_docx(
-        str(docx_path),
-        extract_images=True,
-        image_output_dir=str(image_dir),
-        file_id=file_id,
-    )
-    questions = split_questions(
-        result["paragraphs"],
-        file_id=file_id,
-        formula_render_plan=result.get("formula_render_plan"),
-    )
-    selected_questions = [q for q in questions if q.id in set(question_ids)]
 
-    if not selected_questions:
-        raise HTTPException(status_code=400, detail="未找到需要导出的题目")
+    if questions_payload and isinstance(questions_payload, list) and len(questions_payload) > 0:
+        by_id = {
+            str(q.get("id")): q
+            for q in questions_payload
+            if isinstance(q, dict) and q.get("id") is not None
+        }
+        for qid in question_ids:
+            qd = by_id.get(str(qid))
+            if qd:
+                selected_questions.append(question_from_dict(qd))
+        if not selected_questions:
+            raise HTTPException(
+                status_code=400,
+                detail="未找到需要导出的题目：题目 ID 与缓存不一致，请重新解析后再导出",
+            )
+    else:
+        # 无缓存题目时重新解析整卷（较慢）
+        candidates = sorted(list(UPLOAD_DIR.glob(f"{file_id}_*.docx")))
+        if not candidates:
+            raise HTTPException(status_code=404, detail="未找到原始上传文件")
+        docx_path = candidates[0]
+
+        result = parse_docx(
+            str(docx_path),
+            extract_images=True,
+            image_output_dir=str(image_dir),
+            file_id=file_id,
+        )
+        questions = split_questions(
+            result["paragraphs"],
+            file_id=file_id,
+            formula_render_plan=result.get("formula_render_plan"),
+        )
+        selected_questions = [q for q in questions if q.id in set(question_ids)]
+
+        if not selected_questions:
+            raise HTTPException(status_code=400, detail="未找到需要导出的题目")
 
     EXPORT_DIR.mkdir(parents=True, exist_ok=True)
     out_path = EXPORT_DIR / f"export_{file_id}_{uuid.uuid4().hex}.docx"
@@ -376,4 +397,6 @@ async def export_questions(data: dict):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+    port = int(os.environ.get("PARSER_PORT", "8000"))
+    uvicorn.run(app, host="0.0.0.0", port=port)

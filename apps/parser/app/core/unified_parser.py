@@ -13,6 +13,7 @@ import re
 
 from .pandoc_converter import EnhancedPandocConverter
 from .image_fallback import ImageFallbackProcessor
+from .docx_to_html import convert_docx_to_html
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +129,13 @@ class UnifiedDocxParser:
                 flags=re.IGNORECASE
             )
             
+            if not (html_content or '').strip():
+                logger.warning('Pandoc 输出 HTML 为空，回退 docx_to_html')
+                try:
+                    html_content = convert_docx_to_html(str(docx_path))
+                except Exception as e:
+                    logger.error(f'docx_to_html 回退失败: {e}')
+
             paragraphs = self._parse_html_to_paragraphs(html_content)
             formulas = self._extract_formulas_from_html(html_content)
             
@@ -177,11 +185,24 @@ class UnifiedDocxParser:
                     if success:
                         images = img_map
             
+            # Pandoc 不可用时此前返回空 HTML，导致「整体 HTML」模式前端无内容
+            html_content = ''
+            try:
+                html_content = convert_docx_to_html(str(docx_path))
+            except Exception as conv_err:
+                logger.warning(f"降级路径 docx_to_html 失败，改用段落拼接: {conv_err}")
+            if not (html_content or '').strip():
+                body = '\n'.join(
+                    p.get('content_html') or f"<p>{p.get('text', '')}</p>"
+                    for p in paragraphs
+                )
+                html_content = self._minimal_preview_html(body)
+
             return True, {
                 'paragraphs': paragraphs,
                 'images': images,
                 'formulas': formulas,
-                'html_content': ''
+                'html_content': html_content
             }, ""
             
         except Exception as e:
@@ -304,6 +325,19 @@ class UnifiedDocxParser:
             logger.error(f"解析 document.xml 失败: {e}")
         
         return paragraphs
+    
+    def _minimal_preview_html(self, body: str) -> str:
+        """无 Pandoc / docx_to_html 失败时的最小可预览 HTML"""
+        b = (body or '').strip()
+        if not b:
+            b = '<p>（未能从文档中提取可见内容）</p>'
+        return (
+            '<!DOCTYPE html>\n<html><head><meta charset="UTF-8">'
+            '<meta name="viewport" content="width=device-width, initial-scale=1">'
+            '<style>body{font-family:"Times New Roman","SimSun",serif;font-size:12pt;'
+            'line-height:1.6;margin:40px;color:#333;}</style></head><body>'
+            f'{b}</body></html>'
+        )
     
     def _generate_optimized_html(self, formula_result: dict, file_id: str) -> str:
         """根据公式解析结果生成优化的 HTML"""

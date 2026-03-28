@@ -580,6 +580,44 @@ class QuestionSplitter:
         return Path(rendered_path).name
 
 
+def question_from_dict(d: Dict[str, Any]) -> Question:
+    """从 API/JSON 恢复 Question，供导出时跳过重新解析"""
+    raw_type = d.get('type', 'unknown')
+    try:
+        qtype = QuestionType(str(raw_type))
+    except ValueError:
+        qtype = QuestionType.UNKNOWN
+    options: List[Option] = []
+    for o in d.get('options') or []:
+        if not isinstance(o, dict):
+            continue
+        options.append(
+            Option(
+                label=str(o.get('label', '')),
+                content=str(o.get('content', '')),
+                content_html=str(o.get('content_html', '')),
+                is_latex=bool(o.get('is_latex', False)),
+                images=list(o.get('images') or []),
+            )
+        )
+    return Question(
+        id=str(d.get('id', '')),
+        number=int(d.get('number', 0)),
+        type=qtype,
+        type_name=str(d.get('type_name', '')),
+        content=str(d.get('content', '')),
+        content_html=str(d.get('content_html', '')),
+        options=options,
+        answer=d.get('answer'),
+        analysis=d.get('analysis'),
+        score=d.get('score'),
+        difficulty=d.get('difficulty'),
+        images=list(d.get('images') or []),
+        latex_formulas=list(d.get('latex_formulas') or []),
+        raw_paragraphs=[],
+    )
+
+
 def split_questions(
     paragraphs: List[Dict[str, Any]],
     file_id: str = None,

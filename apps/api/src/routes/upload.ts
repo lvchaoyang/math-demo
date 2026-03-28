@@ -266,4 +266,9 @@ router.get('/questions/:fileId', (req, res) => {
   res.json(progress.questions || []);
 });
 
+/** 供导出路由读取已缓存的题目，避免 Python 端重新解析整卷 */
+export function getParseProgressSnapshot(fileId: string): ParseProgress | undefined {
+  return parseProgressStore.get(fileId);
+}
+
 export { router as uploadRouter };

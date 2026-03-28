@@ -4,7 +4,7 @@
 
 from .parser import DocxParser, parse_docx
 from .omml2latex import OMML2LaTeXConverter, convert_omml_to_latex
-from .splitter import QuestionSplitter, Question, QuestionType, split_questions
+from .splitter import QuestionSplitter, Question, QuestionType, split_questions, question_from_dict
 from .docx_to_html import DocxToHtmlConverter, convert_docx_to_html
 from .image_converter import ImageConverter
 from .wmf_converter import WMFConverter
@@ -25,6 +25,7 @@ __all__ = [
     'Question',
     'QuestionType',
     'split_questions',
+    'question_from_dict',
     'DocxToHtmlConverter',
     'convert_docx_to_html',
     'ImageConverter',

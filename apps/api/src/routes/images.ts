@@ -19,13 +19,27 @@ const RSVG_CONVERT_CMD = process.env.RSVG_CONVERT_PATH || 'rsvg-convert';
 const MAGICK_CMD = process.env.MAGICK_PATH || 'magick';
 const INKSCAPE_CMD = process.env.INKSCAPE_PATH || 'inkscape';
 const SOFFICE_CMD = process.env.SOFFICE_PATH || 'soffice';
-/** Windows：指向 tools/wmf-gdi-render 编译出的 WmfGdiRender.exe（GDI+ 栅格化 WMF/EMF） */
-const WMF_GDI_RENDER_EXE = (process.env.WMF_GDI_RENDER_EXE || '').trim();
+/** Windows：指向 tools/wmf-gdi-render 编译出的 WmfGdiRender.exe（GDI+ 栅格化 WMF/EMF）；未设置时尝试仓库默认输出路径 */
 const CONVERT_TIMEOUT_MS = Number(process.env.IMAGE_CONVERT_TIMEOUT_MS || 12000);
-const WMF_CACHE_VERSION = 'v13';
+const WMF_CACHE_VERSION = 'v14';
+
+function getWmfGdiRenderExe(): string {
+  const fromEnv = (process.env.WMF_GDI_RENDER_EXE || '').trim();
+  if (fromEnv) return fromEnv;
+  if (os.platform() !== 'win32') return '';
+  const candidates = [
+    path.join(PROJECT_ROOT, 'tools', 'wmf-gdi-render', 'bin', 'Release', 'net8.0-windows', 'WmfGdiRender.exe'),
+    path.join(PROJECT_ROOT, 'tools', 'wmf-gdi-render', 'bin', 'Debug', 'net8.0-windows', 'WmfGdiRender.exe'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return '';
+}
 
 function isGdiMetafileRendererAvailable(): boolean {
-  return os.platform() === 'win32' && WMF_GDI_RENDER_EXE.length > 0 && fs.existsSync(WMF_GDI_RENDER_EXE);
+  const exe = getWmfGdiRenderExe();
+  return os.platform() === 'win32' && exe.length > 0 && fs.existsSync(exe);
 }
 
 type CommandResult = {
@@ -162,11 +176,16 @@ async function convertWithGdiRender(
   rasterDpi: number
 ): Promise<{ success: boolean; error?: string }> {
   if (!isGdiMetafileRendererAvailable()) {
-    return { success: false, error: 'GDI metafile renderer not available (need Windows + WMF_GDI_RENDER_EXE)' };
+    return {
+      success: false,
+      error:
+        'GDI metafile renderer not available (need Windows, .NET 8 WmfGdiRender.exe under tools/wmf-gdi-render, or set WMF_GDI_RENDER_EXE)',
+    };
   }
   const dpi = Math.min(1200, Math.max(72, Math.round(rasterDpi)));
+  const exe = getWmfGdiRenderExe();
   const result = await runCommandWithTimeout(
-    WMF_GDI_RENDER_EXE,
+    exe,
     [wmfPath, pngPath, '--dpi', String(dpi)],
     Math.max(CONVERT_TIMEOUT_MS * 3, 25000)
   );
@@ -478,7 +497,8 @@ async function convertWmfBestEffort(
   }
 
   fs.copyFileSync(winner.outputPath, finalPngPath);
-  if (enableNormalize) {
+  // GDI+ 栅格化已接近 Word，再用 ImageMagick trim/extent 易伤版式；与 README 中 method=gdi&normalize=0 建议一致
+  if (enableNormalize && winner.method !== 'gdi') {
     const normalized = await normalizeFormulaPng(finalPngPath, fillPriority);
     if (normalized.applied) {
       winner.normalized = true;

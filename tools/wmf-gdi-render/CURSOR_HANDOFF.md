@@ -21,7 +21,7 @@
 | `tools/wmf-gdi-render/Program.cs` | CLI：`WmfGdiRender.exe <input.wmf\|emf> <output.png> [--dpi 72-1200]` |
 | `tools/wmf-gdi-render/README.md` | 人类可读简版说明 |
 | `tools/wmf-gdi-render/CURSOR_HANDOFF.md` | **本文件**：给后续 Cursor 会话的完整上下文 |
-| `apps/api/src/routes/images.ts` | 在 **Windows + 配置 exe** 时接入 GDI；`method=gdi`；`auto` 优先 `gdi`；缓存键含 `v13` 等 |
+| `apps/api/src/routes/images.ts` | 在 **Windows + 存在 exe** 时接入 GDI（可设 `WMF_GDI_RENDER_EXE` 或自动使用 `tools/wmf-gdi-render/bin/.../WmfGdiRender.exe`）；`method=gdi`；`auto` 优先 `gdi`；GDI 结果跳过 Magick 归一化；缓存键含 `v14` 等 |
 
 **Python 解析器**：无需为「仅 GDI」改逻辑；仍输出带 `file_id_` 前缀的 WMF 路径，由 Node 图片路由按需转 PNG。
 
@@ -32,7 +32,7 @@
 1. **Windows 10/11** 或 Windows Server（`os.platform() === 'win32'`）。  
 2. 安装 **[.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)**。  
 3. 在本机编译出 `WmfGdiRender.exe`（见下节）。  
-4. 启动 **Node API**（`@math-demo/api`）前设置环境变量 **`WMF_GDI_RENDER_EXE`** 为 exe 的**绝对路径**。
+4. 将 `WmfGdiRender.exe` 编译到仓库默认路径（见第 4 节）后，API 会**自动探测**，一般无需再设环境变量；若 exe 放在别处，启动 **Node API** 前设置 **`WMF_GDI_RENDER_EXE`** 为**绝对路径**。
 
 ---
 
@@ -75,7 +75,7 @@ set WMF_GDI_RENDER_EXE=C:\你的路径\WmfGdiRender.exe
 - **`method=gdi`**：只接受 GDI 结果；失败则 **500**，不会静默改用其它引擎（避免误以为「已是 GDI」）。  
 - **`method=auto`（默认 query 或不写 method 时的自动分支）**：优先 **`gdi`**，再 **`wmf2svg` → inkscape → magick → soffice`**（与无 GDI 时相比，仅在 Windows 配置 exe 后多插一层 `gdi`）。  
 - 其它 query 仍有效：`dpi`、`normalize`、`fit`、`outline` 等；**`dpi` 会传给 `WmfGdiRender.exe --dpi`**。  
-- 缓存文件名包含版本 **`v13`** 及 method/dpi 等，改引擎后勿混用旧缓存目录可删 `data/image_cache` 下对应文件。
+- 缓存文件名包含版本 **`v14`** 及 method/dpi 等，改引擎后勿混用旧缓存目录可删 `data/image_cache` 下对应文件。
 
 ### 示例 URL（前端经 3000 代理到 API 时）
 
@@ -115,4 +115,4 @@ GET /api/v1/images/{fileId}/{fileId}_image33.wmf?method=gdi&dpi=300&normalize=0
 
 ---
 
-*文档版本：与仓库内 `WMF_CACHE_VERSION`（当前 `v13`）及 `images.ts` 行为一致；若你改了缓存版本或路由，请同步更新本节。*
+*文档版本：与仓库内 `WMF_CACHE_VERSION`（当前 `v14`）及 `images.ts` 行为一致；若你改了缓存版本或路由，请同步更新本节。*

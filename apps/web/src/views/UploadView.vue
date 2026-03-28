@@ -180,13 +180,15 @@ const startPollingProgress = (fileId: string) => {
       
       if (data.status === 'completed') {
         clearInterval(pollInterval)
-        
-        if (data.mode === 'html') {
-          // HTML 模式
-          htmlContent.value = data.html
-          ElMessage.success('HTML 转换完成')
+        parsingStatus.value = false
 
-            // 让新插入的 HTML 也进行 MathJax typeset，避免公式重叠/错位
+        if (data.mode === 'html') {
+          const raw = data.html
+          htmlContent.value = typeof raw === 'string' ? raw : ''
+          if (!htmlContent.value.trim()) {
+            ElMessage.warning('HTML 内容为空，请确认已安装 Pandoc 或文档是否可读')
+          } else {
+            ElMessage.success('HTML 转换完成')
             await nextTick()
             if ((window as any).MathJax && htmlPreviewRef.value) {
               try {
@@ -203,13 +205,14 @@ const startPollingProgress = (fileId: string) => {
                 console.error('HTML MathJax 渲染失败:', e)
               }
             }
+          }
         } else {
-          // 题目拆分模式
-          questions.value = data.questions
-          ElMessage.success(`解析完成，共 ${data.questions.length} 道题目`)
+          questions.value = Array.isArray(data.questions) ? data.questions : []
+          ElMessage.success(`解析完成，共 ${questions.value.length} 道题目`)
         }
       } else if (data.status === 'error') {
         clearInterval(pollInterval)
+        parsingStatus.value = false
         ElMessage.error(data.message)
       }
     } catch (error) {
