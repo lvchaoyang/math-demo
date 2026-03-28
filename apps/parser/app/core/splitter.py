@@ -5,6 +5,7 @@
 """
 
 import re
+from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
@@ -106,12 +107,17 @@ class QuestionSplitter:
         r'共\s*(\d+)\s*分',
     ]
 
-    def __init__(self, file_id: str = None):
+    def __init__(self, file_id: str = None, formula_render_plan: Optional[List[Dict[str, Any]]] = None):
         self.current_type = QuestionType.UNKNOWN
         self.current_type_name = ""
         self.questions: List[Question] = []
         self.file_id = file_id
         self.in_answer_section = False
+        self.formula_render_plan = formula_render_plan or []
+        self.rendered_asset_map: Dict[str, str] = {}
+        for entry in self.formula_render_plan:
+            if isinstance(entry, dict) and entry.get("status") == "rendered" and entry.get("rendered_image"):
+                self.rendered_asset_map[str(entry.get("asset_id"))] = str(entry.get("rendered_image"))
         
     def split(self, paragraphs: List[Dict[str, Any]]) -> List[Question]:
         """将段落列表拆分为题目"""
@@ -484,10 +490,19 @@ class QuestionSplitter:
         parts = []
         content_items = para.get('content_items', [])
         only_images = bool(content_items) and all(i.get('type') == 'image' for i in content_items)
+        formula_refs = para.get('formula_asset_refs') or []
+        formula_ref_cursor = 0
 
-        for item in content_items:
+        for item_idx, item in enumerate(content_items):
             item_type = item['type']
             content = item['content']
+            rendered_formula_filename = None
+
+            # 若该内容项有预渲染公式资产，优先输出渲染图
+            if item_type in ['latex', 'latex_block', 'image'] and formula_ref_cursor < len(formula_refs):
+                asset_id = formula_refs[formula_ref_cursor]
+                formula_ref_cursor += 1
+                rendered_formula_filename = self._get_rendered_formula_filename(asset_id)
             
             if item_type == 'text':
                 content = self._escape_html(content)
@@ -500,14 +515,22 @@ class QuestionSplitter:
             elif item_type == 'latex':
                 if parts and not parts[-1].endswith(' '):
                     parts.append(' ')
-                parts.append(self._format_inline_formula(content))
+                if rendered_formula_filename:
+                    parts.append(self._format_image(rendered_formula_filename, 'formula-image'))
+                else:
+                    parts.append(self._format_inline_formula(content))
             elif item_type == 'latex_block':
                 if parts:
                     parts.append(' ')
-                parts.append(self._format_block_formula(content))
+                if rendered_formula_filename:
+                    parts.append(self._format_image(rendered_formula_filename, 'formula-image-block'))
+                else:
+                    parts.append(self._format_block_formula(content))
             elif item_type == 'image':
                 if isinstance(content, dict):
-                    img_src = content.get('filename', '')
+                    img_src = rendered_formula_filename or content.get('filename', '')
+                    if not img_src:
+                        continue
                     if parts and not parts[-1].endswith(' '):
                         parts.append(' ')
                     # 纯“公式段落”里的图片统一当作块级，避免行内布局挤压。
@@ -537,7 +560,7 @@ class QuestionSplitter:
         """格式化块级公式"""
         latex = (latex or '').strip()
         latex_escaped = self._escape_html(latex)
-        return f'<div class="math-block" data-latex="{latex_escaped}">$$${latex_escaped}$$</div>'
+        return f'<div class="math-block" data-latex="{latex_escaped}">$${latex_escaped}$$</div>'
     
     def _format_image(self, filename: str, css_class: str, alt: str = '') -> str:
         """格式化图片标签"""
@@ -549,8 +572,19 @@ class QuestionSplitter:
         alt_attr = f' alt="{alt}"' if alt else ''
         return f'<img src="{img_src}" class="{css_class}"{alt_attr} />'
 
+    def _get_rendered_formula_filename(self, asset_id: str) -> Optional[str]:
+        """根据资产 ID 获取预渲染公式图文件名"""
+        rendered_path = self.rendered_asset_map.get(asset_id)
+        if not rendered_path:
+            return None
+        return Path(rendered_path).name
 
-def split_questions(paragraphs: List[Dict[str, Any]], file_id: str = None) -> List[Question]:
+
+def split_questions(
+    paragraphs: List[Dict[str, Any]],
+    file_id: str = None,
+    formula_render_plan: Optional[List[Dict[str, Any]]] = None
+) -> List[Question]:
     """便捷函数：拆分题目"""
-    splitter = QuestionSplitter(file_id=file_id)
+    splitter = QuestionSplitter(file_id=file_id, formula_render_plan=formula_render_plan)
     return splitter.split(paragraphs)

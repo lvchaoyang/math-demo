@@ -82,7 +82,11 @@ async def parse_document(file: UploadFile = File(...), mode: str = Form("questio
             )
             
             # 拆分题目
-            questions = split_questions(result['paragraphs'], file_id=file_id)
+            questions = split_questions(
+                result['paragraphs'],
+                file_id=file_id,
+                formula_render_plan=result.get('formula_render_plan'),
+            )
             
             # 转换为字典格式
             questions_data = []
@@ -130,7 +134,10 @@ async def parse_document(file: UploadFile = File(...), mode: str = Form("questio
                 "file_id": file_id,
                 "mode": "questions",
                 "questions": questions_data,
-                "total_questions": len(questions_data)
+                "total_questions": len(questions_data),
+                "formula_render_summary": result.get("formula_render_summary", {}),
+                "formula_asset_debug": result.get("formula_asset_debug", {}),
+                "formula_render_plan": result.get("formula_render_plan", []),
             }
         
     except Exception as e:
@@ -201,7 +208,11 @@ async def parse_document_v2(file: UploadFile = File(...), mode: str = Form("ques
             parse_method = "standard_questions"
 
             # 拆分题目
-            questions = split_questions(parse_result['paragraphs'], file_id=file_id)
+            questions = split_questions(
+                parse_result['paragraphs'],
+                file_id=file_id,
+                formula_render_plan=parse_result.get('formula_render_plan'),
+            )
             
             # 转换为字典格式
             questions_data = []
@@ -242,7 +253,10 @@ async def parse_document_v2(file: UploadFile = File(...), mode: str = Form("ques
                 "mode": "questions",
                 "questions": questions_data,
                 "total_questions": len(questions_data),
-                "method": parse_method
+                "method": parse_method,
+                "formula_render_summary": parse_result.get("formula_render_summary", {}),
+                "formula_asset_debug": parse_result.get("formula_asset_debug", {}),
+                "formula_render_plan": parse_result.get("formula_render_plan", []),
             }
         
     except Exception as e:
@@ -330,7 +344,11 @@ async def export_questions(data: dict):
         image_output_dir=str(image_dir),
         file_id=file_id,
     )
-    questions = split_questions(result["paragraphs"], file_id=file_id)
+    questions = split_questions(
+        result["paragraphs"],
+        file_id=file_id,
+        formula_render_plan=result.get("formula_render_plan"),
+    )
     selected_questions = [q for q in questions if q.id in set(question_ids)]
 
     if not selected_questions:

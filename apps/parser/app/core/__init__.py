@@ -9,6 +9,7 @@ from .docx_to_html import DocxToHtmlConverter, convert_docx_to_html
 from .image_converter import ImageConverter
 from .wmf_converter import WMFConverter
 from .mathtype_parser import MathTypeParser
+from .formula_renderer import FormulaRenderer
 from .exporter import WordExporter, export_questions
 
 from .pandoc_converter import EnhancedPandocConverter, convert_docx_enhanced
@@ -29,6 +30,7 @@ __all__ = [
     'ImageConverter',
     'WMFConverter',
     'MathTypeParser',
+    'FormulaRenderer',
     'WordExporter',
     'export_questions',
     'EnhancedPandocConverter',

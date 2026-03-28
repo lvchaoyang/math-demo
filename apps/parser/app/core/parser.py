@@ -9,11 +9,13 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 import re
+import hashlib
 
 from .omml2latex import convert_omml_to_latex
 from .image_converter import ImageConverter
 from .wmf_converter import WMFConverter
 from .mathtype_parser import MathTypeParser
+from .formula_renderer import FormulaRenderer
 
 
 class DocxParser:
@@ -403,6 +405,7 @@ class DocxParser:
                 ole = obj_elem.find(f'.//{ns_r}OLEObject')
                 
             if ole is not None:
+                shape_info = self._parse_formula_shape(obj_elem)
                 r_id = ole.get(f'{{{self.NAMESPACES["r"]}}}id')
                 if r_id and r_id in self.relationships:
                     rel_info = self.relationships[r_id]
@@ -410,13 +413,21 @@ class DocxParser:
                     
                     if 'embeddings' in target:
                         ole_filename = Path(target).name
-                        if ole_filename in self.media_map:
-                            return {
-                                'filename': self.media_map[ole_filename],
-                                'type': 'mathtype_ole'
-                            }
+                        # 关键：即使暂未成功转图，也保留 mathtype_ole 语义，避免退化成 wmf_preview
+                        converted_filename = self.media_map.get(ole_filename, '')
+                        preview_filename = ""
+                        if isinstance(shape_info, dict):
+                            preview_filename = shape_info.get("filename", "") or ""
+                        return {
+                            # 优先使用 OLE 转出的 PNG；缺失时回退 shape 预览图，避免生成空图片 URL
+                            'filename': converted_filename or preview_filename,
+                            'type': 'mathtype_ole',
+                            'ole_filename': ole_filename,
+                            'ole_converted_filename': converted_filename,
+                            'preview_filename': preview_filename,
+                            'rel_id': r_id,
+                        }
                     
-                shape_info = self._parse_formula_shape(obj_elem)
                 if shape_info:
                     return shape_info
                     
@@ -554,6 +565,22 @@ def parse_docx(file_path: str, extract_images: bool = True, image_output_dir: st
             
         paragraphs = parser.parse_document()
         result['paragraphs'] = paragraphs
+        result['formula_asset_debug'] = _summarize_formula_asset_inputs(paragraphs)
+        formula_assets = _build_formula_assets(paragraphs, file_id=file_id)
+        result['formula_assets'] = formula_assets
+
+        renderer = FormulaRenderer()
+        formula_output_dir = None
+        if image_output_dir:
+            formula_output_dir = str(Path(image_output_dir) / "formula_assets")
+        result['formula_render_plan'] = renderer.build_render_plan(
+            formula_assets,
+            file_id=file_id,
+            output_dir=formula_output_dir,
+            render_omml=True,
+            source_image_dir=image_output_dir,
+        )
+        result['formula_render_summary'] = _summarize_formula_render_plan(result['formula_render_plan'])
 
         # 文档级元数据：为复杂数学试卷提供整体统计信息
         total_formulas = 0
@@ -571,6 +598,198 @@ def parse_docx(file_path: str, extract_images: bool = True, image_output_dir: st
             'total_paragraphs': len(paragraphs),
             'total_formula_paragraphs': total_formula_paragraphs,
             'total_formulas': total_formulas,
+            'total_formula_assets': len(formula_assets),
         }
 
     return result
+
+
+def _summarize_formula_asset_inputs(paragraphs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """统计资产构建前的输入形态，便于定位 formula_assets 归零问题。"""
+    debug = {
+        "paragraphs": len(paragraphs or []),
+        "paragraphs_with_content_items": 0,
+        "total_content_items": 0,
+        "item_type_count": {},
+        "image_count": 0,
+        "image_ext_count": {},
+        "image_meta_type_count": {},
+    }
+    for para in paragraphs or []:
+        if not isinstance(para, dict):
+            continue
+        items = para.get("content_items") or []
+        if items:
+            debug["paragraphs_with_content_items"] += 1
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            debug["total_content_items"] += 1
+            item_type = str(item.get("type", "unknown"))
+            type_count = debug["item_type_count"]
+            type_count[item_type] = type_count.get(item_type, 0) + 1
+
+            if item_type != "image":
+                continue
+            debug["image_count"] += 1
+            content = item.get("content") or {}
+            if isinstance(content, dict):
+                meta_type = str(content.get("type", ""))
+                meta_count = debug["image_meta_type_count"]
+                meta_count[meta_type or ""] = meta_count.get(meta_type or "", 0) + 1
+                filename = str(content.get("filename", "") or "")
+                original_filename = str(content.get("original_filename", "") or "")
+            else:
+                meta_count = debug["image_meta_type_count"]
+                meta_count["non_dict_content"] = meta_count.get("non_dict_content", 0) + 1
+                filename = ""
+                original_filename = ""
+
+            ext_source = filename or original_filename
+            ext = Path(ext_source).suffix.lower() if ext_source else ""
+            ext_count = debug["image_ext_count"]
+            ext_count[ext or ""] = ext_count.get(ext or "", 0) + 1
+    return debug
+
+
+def _build_formula_assets(paragraphs: List[Dict[str, Any]], file_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    P1: 统一公式资产模型
+    将段落中的公式相关内容提取为统一 formula_assets 结构，供后续渲染引擎使用。
+    """
+    assets: List[Dict[str, Any]] = []
+    file_prefix = file_id or "unknown"
+
+    for para_idx, para in enumerate(paragraphs):
+        if not isinstance(para, dict):
+            continue
+        content_items = para.get("content_items") or []
+        refs: List[str] = []
+        has_mathtype_ole = False
+        for ci in content_items:
+            if ci.get("type") != "image":
+                continue
+            ci_content = ci.get("content") or {}
+            if (
+                isinstance(ci_content, dict)
+                and ci_content.get("type") == "mathtype_ole"
+                and bool(ci_content.get("filename"))
+            ):
+                has_mathtype_ole = True
+                break
+
+        for item_idx, item in enumerate(content_items):
+            item_type = item.get("type")
+            source_type = ""
+            display_type = "inline"
+            latex = ""
+            image_filename = ""
+
+            if item_type == "latex":
+                source_type = "omml"
+                display_type = "inline"
+                latex = (item.get("content") or "").strip()
+            elif item_type == "latex_block":
+                source_type = "omml"
+                display_type = "block"
+                latex = (item.get("content") or "").strip()
+            elif item_type == "image":
+                info = item.get("content") or {}
+                if isinstance(info, dict):
+                    image_filename = info.get("filename", "")
+                    meta_type = info.get("type", "")
+                    original_filename = str(info.get("original_filename", "") or "")
+                    preview_filename = str(info.get("preview_filename", "") or "")
+                else:
+                    image_filename = ""
+                    meta_type = ""
+                    original_filename = ""
+                    preview_filename = ""
+                if meta_type == "mathtype_ole":
+                    # 若 OLE 转图失败但携带了预览 WMF/EMF，回退走 wmf_preview，保证可渲染路径
+                    if image_filename.lower().endswith((".wmf", ".emf")):
+                        source_type = "wmf_preview"
+                        display_type = "inline"
+                    else:
+                        if not image_filename and preview_filename:
+                            image_filename = preview_filename
+                        # 即使缺少 filename 也保留 mathtype_ole 资产，便于观测缺失原因
+                        source_type = "mathtype_ole"
+                        display_type = "inline"
+                elif image_filename.lower().endswith((".wmf", ".emf")):
+                    # 同段落存在 MathType OLE 时，优先 OLE 语义源，抑制预览 WMF 噪音
+                    if has_mathtype_ole:
+                        continue
+                    source_type = "wmf_preview"
+                    display_type = "inline"
+                elif original_filename.lower().endswith((".wmf", ".emf")):
+                    # 兜底：某些链路会把 filename 转成 png，但 original_filename 仍是 wmf/emf
+                    if has_mathtype_ole:
+                        continue
+                    source_type = "wmf_preview"
+                    display_type = "inline"
+
+            if not source_type:
+                continue
+
+            fingerprint_source = f"{source_type}|{display_type}|{latex}|{image_filename}|{para_idx}|{item_idx}"
+            short_hash = hashlib.sha1(fingerprint_source.encode("utf-8")).hexdigest()[:12]
+            asset_id = f"fa_{file_prefix}_{para_idx}_{item_idx}_{short_hash}"
+
+            asset = {
+                "id": asset_id,
+                "source_type": source_type,
+                "display_type": display_type,
+                "latex": latex,
+                "image_filename": image_filename,
+                "paragraph_index": para_idx,
+                "item_index": item_idx,
+                # P1 预留：后续可填 shape 几何参数
+                "bbox_hint": None,
+                # P1 预留：后续可携带更多调试信息
+                "meta": {},
+            }
+            assets.append(asset)
+            refs.append(asset_id)
+
+        if refs:
+            para["formula_asset_refs"] = refs
+
+    return assets
+
+
+def _summarize_formula_render_plan(render_plan: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """汇总渲染计划状态，便于接口层和前端观察效果。"""
+    summary = {
+        "total": 0,
+        "rendered": 0,
+        "source_only": 0,
+        "planned": 0,
+        "skip": 0,
+        "by_source_type": {},
+        "by_action": {},
+        "by_note": {},
+    }
+    for item in render_plan or []:
+        if not isinstance(item, dict):
+            continue
+        summary["total"] += 1
+        status = str(item.get("status", "planned"))
+        if status in summary:
+            summary[status] += 1
+        else:
+            summary["planned"] += 1
+        if str(item.get("action", "")) == "skip":
+            summary["skip"] += 1
+        action = str(item.get("action", "unknown"))
+        by_action = summary["by_action"]
+        by_action[action] = by_action.get(action, 0) + 1
+
+        note = str(item.get("note", "")).strip()
+        if note:
+            by_note = summary["by_note"]
+            by_note[note] = by_note.get(note, 0) + 1
+        source_type = str(item.get("source_type", "unknown"))
+        by_type = summary["by_source_type"]
+        by_type[source_type] = by_type.get(source_type, 0) + 1
+    return summary

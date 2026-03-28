@@ -28,6 +28,37 @@ export interface ParseProgress {
   mode?: 'questions' | 'html';
   questions?: Question[];
   html?: string;
+  formula_render_summary?: {
+    total: number;
+    rendered: number;
+    source_only: number;
+    planned: number;
+    skip: number;
+    by_source_type?: Record<string, number>;
+    by_action?: Record<string, number>;
+    by_note?: Record<string, number>;
+  };
+  formula_asset_debug?: {
+    paragraphs: number;
+    paragraphs_with_content_items: number;
+    total_content_items: number;
+    item_type_count?: Record<string, number>;
+    image_count: number;
+    image_ext_count?: Record<string, number>;
+    image_meta_type_count?: Record<string, number>;
+  };
+  formula_render_plan?: Array<{
+    asset_id?: string;
+    source_type?: string;
+    action?: string;
+    cache_key?: string;
+    source_filename?: string | null;
+    source_path?: string | null;
+    target_path?: string;
+    status?: string;
+    note?: string;
+    rendered_image?: string | null;
+  }>;
 }
 
 export interface UploadResponse {

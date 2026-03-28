@@ -169,16 +169,35 @@ async function parseDocument(
         });
         logger.info(`HTML conversion completed for file: ${fileId}, method: ${parseMethod}`);
       } else {
+        const formulaRenderSummary = response.data.formula_render_summary || undefined;
+        const formulaAssetDebug = response.data.formula_asset_debug || undefined;
+        const formulaRenderPlan = response.data.formula_render_plan || undefined;
         parseProgressStore.set(fileId, {
           file_id: fileId,
           status: 'completed',
           progress: 100,
           message: `解析完成（使用 ${parseMethod} 方案）`,
           mode: 'questions',
-          questions: response.data.questions
+          questions: response.data.questions,
+          formula_render_summary: formulaRenderSummary,
+          formula_asset_debug: formulaAssetDebug,
+          formula_render_plan: formulaRenderPlan,
         });
         logger.info(`Parse completed for file: ${fileId}, method: ${parseMethod}`);
         logger.info(`Formulas extracted: ${response.data.formulas_count || 0}, Images: ${response.data.images_count || 0}`);
+        if (formulaRenderSummary) {
+          logger.info(
+            `Formula render summary: total=${formulaRenderSummary.total}, rendered=${formulaRenderSummary.rendered}, source_only=${formulaRenderSummary.source_only}`
+          );
+        }
+        if (formulaAssetDebug) {
+          logger.info(
+            `Formula asset debug: paragraphs=${formulaAssetDebug.paragraphs}, content_items=${formulaAssetDebug.total_content_items}, images=${formulaAssetDebug.image_count}`
+          );
+        }
+        if (formulaRenderPlan) {
+          logger.info(`Formula render plan entries: ${Array.isArray(formulaRenderPlan) ? formulaRenderPlan.length : 0}`);
+        }
       }
     } else {
       throw new Error(response.data.message || '解析失败');
