@@ -71,11 +71,18 @@ export interface UploadResponse {
   mode?: 'questions' | 'html';
 }
 
-export interface ExportRequest {
+/** 跨卷组卷：按数组顺序导出 */
+export interface ExportAssemblyItem {
   file_id: string;
-  question_ids: string[];
+  question_id: string;
+}
+
+export interface ExportRequest {
+  file_id?: string;
+  question_ids?: string[];
+  assembly?: ExportAssemblyItem[];
   title?: string;
-  options: {
+  options?: {
     include_answer: boolean;
     include_analysis: boolean;
     watermark?: string;

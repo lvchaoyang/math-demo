@@ -54,11 +54,19 @@ export interface UploadResponse {
   message: string;
 }
 
+/** 跨卷组卷：按顺序导出 */
+export interface ExportAssemblyItem {
+  file_id: string;
+  question_id: string;
+}
+
 // 导出请求
 export interface ExportRequest {
-  file_id: string;
-  question_ids: string[];
-  options: {
+  file_id?: string;
+  question_ids?: string[];
+  assembly?: ExportAssemblyItem[];
+  title?: string;
+  options?: {
     include_answer: boolean;
     include_analysis: boolean;
     watermark?: string;

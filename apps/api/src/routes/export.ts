@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import axios from 'axios';
 import { logger } from '../utils/logger.js';
-import type { ExportRequest } from '../types/index.js';
+import type { ExportRequest, Question } from '../types/index.js';
 import { getParseProgressSnapshot } from './upload.js';
 
 const router = Router();
@@ -25,36 +25,91 @@ function fastApiDetailMessage(data: unknown): string | null {
 // 导出题目
 router.post('/', async (req, res) => {
   try {
-    const { file_id, question_ids, options, title }: ExportRequest = req.body;
-    
-    if (!file_id || !question_ids || !Array.isArray(question_ids)) {
+    const body = req.body as ExportRequest;
+    const { file_id, question_ids, assembly, title } = body;
+    const options =
+      body.options ?? { include_answer: false, include_analysis: false };
+
+    const parserUrl = getParserUrl();
+    let exportFileId: string;
+    let exportQuestionIds: string[];
+    let exportBody: Record<string, unknown>;
+
+    if (Array.isArray(assembly) && assembly.length > 0) {
+      const ordered: Question[] = [];
+      for (let i = 0; i < assembly.length; i++) {
+        const item = assembly[i];
+        const fid = item?.file_id;
+        const qid = item?.question_id;
+        if (!fid || !qid) {
+          return res.status(400).json({
+            success: false,
+            message: '参数错误: assembly 中每项需要 file_id 与 question_id'
+          });
+        }
+        const snap = getParseProgressSnapshot(fid);
+        if (
+          snap?.status !== 'completed' ||
+          snap.mode !== 'questions' ||
+          !Array.isArray(snap.questions)
+        ) {
+          return res.status(400).json({
+            success: false,
+            message: `试卷尚未解析完成或已失效，请重新上传：${fid}`
+          });
+        }
+        const found = snap.questions.find((q) => q.id === qid);
+        if (!found) {
+          return res.status(400).json({
+            success: false,
+            message: `未找到题目 ${qid}，请重新解析后再导出`
+          });
+        }
+        ordered.push({ ...found, number: i + 1 });
+      }
+      exportFileId = assembly[0]!.file_id;
+      exportQuestionIds = ordered.map((q) => q.id);
+      exportBody = {
+        file_id: exportFileId,
+        question_ids: exportQuestionIds,
+        options,
+        title,
+        questions: ordered,
+        use_questions_payload_order: true
+      };
+      logger.info(
+        `Export start (assembly): files=${new Set(assembly.map((a) => a.file_id)).size}, questions=${ordered.length}, timeoutMs=${EXPORT_TIMEOUT_MS}`
+      );
+    } else if (file_id && question_ids && Array.isArray(question_ids) && question_ids.length > 0) {
+      exportFileId = file_id;
+      exportQuestionIds = question_ids;
+      const snap = getParseProgressSnapshot(file_id);
+      const cachedQuestions =
+        snap?.status === 'completed' &&
+        snap.mode === 'questions' &&
+        Array.isArray(snap.questions) &&
+        snap.questions.length > 0
+          ? snap.questions
+          : undefined;
+
+      logger.info(
+        `Export start: file_id=${file_id}, questions=${question_ids.length}, timeoutMs=${EXPORT_TIMEOUT_MS}, useCached=${Boolean(cachedQuestions)}`
+      );
+      exportBody = {
+        file_id,
+        question_ids,
+        options,
+        title,
+        ...(cachedQuestions ? { questions: cachedQuestions } : {})
+      };
+    } else {
       return res.status(400).json({
         success: false,
-        message: '参数错误: 需要 file_id 和 question_ids'
+        message: '参数错误: 需要 assembly，或 file_id 与 question_ids'
       });
     }
 
-    // 转发到 Python Export 服务
-    const parserUrl = getParserUrl();
-    const snap = getParseProgressSnapshot(file_id);
-    const cachedQuestions =
-      snap?.status === 'completed' &&
-      snap.mode === 'questions' &&
-      Array.isArray(snap.questions) &&
-      snap.questions.length > 0
-        ? snap.questions
-        : undefined;
-
-    logger.info(
-      `Export start: file_id=${file_id}, questions=${question_ids.length}, timeoutMs=${EXPORT_TIMEOUT_MS}, useCached=${Boolean(cachedQuestions)}`
-    );
-    const response = await axios.post(`${parserUrl}/export`, {
-      file_id,
-      question_ids,
-      options,
-      title,
-      ...(cachedQuestions ? { questions: cachedQuestions } : {}),
-    }, {
+    const response = await axios.post(`${parserUrl}/export`, exportBody, {
       responseType: 'stream',
       timeout: EXPORT_TIMEOUT_MS,
       maxContentLength: Infinity,
@@ -68,7 +123,9 @@ router.post('/', async (req, res) => {
     // 流式传输
     response.data.pipe(res);
     
-    logger.info(`Export completed for file: ${file_id}, questions: ${question_ids.length}`);
+    logger.info(
+      `Export completed for file: ${exportFileId}, questions: ${exportQuestionIds.length}`
+    );
   } catch (error: unknown) {
     logger.error(`Export error: ${error}`);
     let message = '导出失败';

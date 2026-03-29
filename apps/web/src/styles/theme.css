@@ -1,0 +1,28 @@
+/**
+ * 全局视觉变量与 Element Plus 轻量调优（教育 / 试卷场景：清爽、低干扰）
+ */
+:root {
+  --md-primary: #5b6ee8;
+  --md-primary-hover: #4a5dcc;
+  --md-primary-soft: #eef0fc;
+  --md-accent: #7c6ae8;
+  --md-page-bg: #f0f2f8;
+  --md-surface: #ffffff;
+  --md-border: #e4e7ef;
+  --md-border-strong: #dcdfe8;
+  --md-text: #1f2937;
+  --md-text-secondary: #64748b;
+  --md-radius: 12px;
+  --md-radius-sm: 8px;
+  --md-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05);
+  --md-shadow-md: 0 4px 20px rgba(15, 23, 42, 0.06);
+  --md-shadow-lg: 0 12px 40px rgba(15, 23, 42, 0.08);
+
+  --el-color-primary: #5b6ee8;
+  --el-border-radius-base: 10px;
+}
+
+body {
+  color: var(--md-text);
+  -webkit-font-smoothing: antialiased;
+}

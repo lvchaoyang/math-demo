@@ -4,7 +4,7 @@
       <div class="card-header">
         <span>题目列表 (共 {{ questions.length }} 道)</span>
         <el-checkbox
-          v-model="selectAll"
+          :model-value="selectAll"
           @change="handleSelectAll"
         >
           全选
@@ -22,7 +22,7 @@
         <div class="question-header">
           <el-checkbox
             :model-value="isSelected(question)"
-            @change="(val: boolean) => handleSelect(question, val)"
+            @change="(val: string | number | boolean) => handleSelect(question, val)"
           >
             <span class="question-number">第 {{ question.number }} 题</span>
             <el-tag size="small" class="question-type">{{ question.type_name }}</el-tag>
@@ -72,25 +72,39 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed } from 'vue'
 import MathRenderer from '../MathRenderer/MathRenderer.vue'
 import type { Question } from '../../types'
 
 interface Props {
   questions: Question[]
+  /** 当前试卷 ID，用于跨卷组卷 */
+  fileId: string
+  /** 已加入组卷的本卷题目 id */
+  assemblyQuestionIds: string[]
 }
 
 const props = defineProps<Props>()
 
 const emit = defineEmits<{
-  (e: 'selection-change', selection: Question[]): void
+  (
+    e: 'toggle-assembly',
+    payload: { fileId: string; question: Question; selected: boolean }
+  ): void
+  (
+    e: 'select-all-assembly',
+    payload: { fileId: string; questions: Question[]; selected: boolean }
+  ): void
 }>()
 
-const selectedQuestions = ref<Question[]>([])
-const selectAll = ref(false)
+const selectAll = computed(
+  () =>
+    props.questions.length > 0 &&
+    props.questions.every((q) => props.assemblyQuestionIds.includes(q.id))
+)
 
 const isSelected = (question: Question) => {
-  return selectedQuestions.value.some(q => q.id === question.id)
+  return props.assemblyQuestionIds.includes(question.id)
 }
 
 // 获取图片URL
@@ -121,74 +135,89 @@ const handleImageError = (e: Event) => {
   // 可以在这里设置默认图片
 }
 
-const handleSelect = (question: Question, selected: boolean) => {
-  if (selected) {
-    if (!isSelected(question)) {
-      selectedQuestions.value.push(question)
-    }
-  } else {
-    selectedQuestions.value = selectedQuestions.value.filter(q => q.id !== question.id)
-  }
-  selectAll.value = selectedQuestions.value.length === props.questions.length
-  emit('selection-change', selectedQuestions.value)
+function coerceChecked(raw: string | number | boolean): boolean {
+  if (typeof raw === 'boolean') return raw
+  return raw === 'true' || raw === 1
 }
 
-const handleSelectAll = (val: boolean) => {
-  if (val) {
-    selectedQuestions.value = [...props.questions]
-  } else {
-    selectedQuestions.value = []
-  }
-  emit('selection-change', selectedQuestions.value)
+const handleSelect = (question: Question, raw: string | number | boolean) => {
+  emit('toggle-assembly', {
+    fileId: props.fileId,
+    question,
+    selected: coerceChecked(raw)
+  })
 }
 
-// 监听题目变化，清空选择
-watch(() => props.questions, () => {
-  selectedQuestions.value = []
-  selectAll.value = false
-  emit('selection-change', [])
-}, { deep: true })
+const handleSelectAll = (val: boolean | string | number) => {
+  const selected = val === true || val === 'true' || val === 1
+  emit('select-all-assembly', {
+    fileId: props.fileId,
+    questions: props.questions,
+    selected
+  })
+}
+
 </script>
 
 <style scoped>
 .question-list-card {
-  margin-bottom: 20px;
+  margin-bottom: 0;
+  border: none;
+  box-shadow: none !important;
+  background: transparent;
+}
+
+.question-list-card :deep(.el-card__header) {
+  padding: 0 0 12px 0;
+  border-bottom: none;
+  background: transparent;
+}
+
+.question-list-card :deep(.el-card__body) {
+  padding: 0;
 }
 
 .card-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 600;
+  color: var(--md-text, #1f2937);
 }
 
 .question-list {
   display: flex;
   flex-direction: column;
-  gap: 15px;
+  gap: 12px;
 }
 
 .question-item {
-  padding: 15px;
-  border: 1px solid #ebeef5;
-  border-radius: 8px;
-  transition: all 0.3s;
-  background: #fff;
+  padding: 16px 18px;
+  border: 1px solid var(--md-border, #e4e7ef);
+  border-radius: var(--md-radius-sm, 8px);
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    background 0.2s ease;
+  background: var(--md-surface, #fff);
+  box-shadow: var(--md-shadow-sm);
 }
 
 .question-item:hover {
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
+  box-shadow: var(--md-shadow-md);
+  border-color: var(--md-border-strong, #dcdfe8);
 }
 
 .question-item.is-selected {
-  border-color: #409eff;
-  background: #f0f9ff;
+  border-color: var(--md-primary, #5b6ee8);
+  background: var(--md-primary-soft, #eef0fc);
+  box-shadow: 0 0 0 1px rgba(91, 110, 232, 0.2);
 }
 
 .question-item.is-low-confidence {
-  border-color: #e6a23c;
-  background: #fff9eb;
+  border-color: #e8b86d;
+  background: #fffbf0;
 }
 
 .question-header {
@@ -211,7 +240,7 @@ watch(() => props.questions, () => {
 .question-content {
   margin-left: 24px;
   line-height: 1.8;
-  color: #303133;
+  color: var(--md-text, #1f2937);
 }
 
 .question-options {
@@ -226,9 +255,10 @@ watch(() => props.questions, () => {
   display: flex;
   align-items: flex-start;
   gap: 5px;
-  padding: 8px;
-  background: #f5f7fa;
-  border-radius: 4px;
+  padding: 10px 12px;
+  background: #f8f9fc;
+  border: 1px solid var(--md-border, #e4e7ef);
+  border-radius: var(--md-radius-sm, 8px);
 }
 
 .option-label {

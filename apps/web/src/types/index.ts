@@ -48,10 +48,17 @@ export interface UploadResponse {
   message: string
 }
 
+export interface ExportAssemblyItem {
+  file_id: string
+  question_id: string
+}
+
 // 导出请求
 export interface ExportRequest {
-  question_ids: string[]
-  title: string
+  file_id?: string
+  question_ids?: string[]
+  assembly?: ExportAssemblyItem[]
+  title?: string
   watermark?: string
   include_answer: boolean
   include_analysis: boolean

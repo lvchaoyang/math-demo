@@ -329,15 +329,37 @@ async def export_questions(data: dict):
     include_answer = bool(options.get("include_answer", False))
     include_analysis = bool(options.get("include_analysis", False))
 
-    if not file_id or not isinstance(question_ids, list) or len(question_ids) == 0:
-        raise HTTPException(status_code=400, detail="参数错误: 需要 file_id 和 question_ids")
+    has_ordered = bool(data.get("use_questions_payload_order")) and isinstance(
+        data.get("questions"), list
+    ) and len(data.get("questions") or []) > 0
+
+    if not file_id:
+        raise HTTPException(status_code=400, detail="参数错误: 需要 file_id")
+    if not has_ordered and (not isinstance(question_ids, list) or len(question_ids) == 0):
+        raise HTTPException(status_code=400, detail="参数错误: 需要 question_ids 或有序题目列表 questions")
 
     questions_payload = data.get("questions")
+    use_payload_order = bool(data.get("use_questions_payload_order"))
     selected_questions = []
     image_dir = IMAGES_DIR / file_id
     image_dir.mkdir(parents=True, exist_ok=True)
 
-    if questions_payload and isinstance(questions_payload, list) and len(questions_payload) > 0:
+    if (
+        use_payload_order
+        and questions_payload
+        and isinstance(questions_payload, list)
+        and len(questions_payload) > 0
+    ):
+        # 跨卷组卷：题目 id 可能重复（如均为 q_0），必须按数组顺序直接使用载荷
+        for q in questions_payload:
+            if isinstance(q, dict):
+                selected_questions.append(question_from_dict(q))
+        if not selected_questions:
+            raise HTTPException(
+                status_code=400,
+                detail="组卷题目列表为空或格式无效",
+            )
+    elif questions_payload and isinstance(questions_payload, list) and len(questions_payload) > 0:
         by_id = {
             str(q.get("id")): q
             for q in questions_payload
