@@ -7,9 +7,19 @@ import struct
 import subprocess
 import tempfile
 import shutil
+import re
+import hashlib
 from pathlib import Path
 from typing import Tuple, Optional, Dict, Any
 import logging
+
+from .mathtype_latex_engine import (
+    is_latex_extraction_disabled,
+    should_try_external_first,
+    should_fallback_heuristic,
+    try_external_latex,
+    get_latex_mode,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +33,8 @@ class MathTypeParser:
     
     def __init__(self):
         self.temp_dir = None
+        # key: sha1(ole 文件字节) -> (latex 或 None, 状态码)
+        self._latex_cache: Dict[str, Tuple[Optional[str], str]] = {}
     
     def parse_ole_file(self, ole_path: str) -> Optional[Dict[str, Any]]:
         """
@@ -266,19 +278,242 @@ class MathTypeParser:
             LaTeX 字符串，或 None 如果无法提取
         """
         try:
-            ole = olefile.OleFileIO(ole_path)
-            
-            if not ole.exists('Equation Native'):
-                return None
-            
-            data = ole.openstream('Equation Native').read()
-            ole.close()
-            
-            # TODO: 实现 MTEF 到 LaTeX 的转换
-            # 这需要完整的 MTEF 解析器
-            
-            return None
-            
+            latex, _reason = self.extract_latex_with_detail(ole_path)
+            return latex
         except Exception as e:
             logger.error(f"提取 LaTeX 失败: {e}")
             return None
+
+    def extract_latex_with_detail(self, ole_path: str) -> Tuple[Optional[str], str]:
+        """
+        从 MathType 对象中提取 LaTeX，并返回失败分类码。
+        """
+        if is_latex_extraction_disabled():
+            return None, "engine_disabled"
+
+        try:
+            file_key = self._build_file_cache_key(ole_path)
+            if file_key and file_key in self._latex_cache:
+                cached_latex, cached_status = self._latex_cache[file_key]
+                if cached_latex:
+                    return cached_latex, "cached_hit"
+                return None, cached_status or "cached_empty"
+
+            # 1) 外部引擎（auto / external）
+            if should_try_external_first():
+                ext_latex, ext_status = try_external_latex(ole_path)
+                if ext_latex:
+                    normalized = self._normalize_latex(ext_latex)
+                    if normalized:
+                        if file_key:
+                            self._latex_cache[file_key] = (normalized, ext_status)
+                        return normalized, ext_status
+                    ext_status = "external_normalize_empty"
+                if get_latex_mode() == "external":
+                    if file_key:
+                        self._latex_cache[file_key] = (None, ext_status)
+                    return None, ext_status
+
+            # 2) 启发式（auto / heuristic）
+            if not should_fallback_heuristic():
+                if file_key:
+                    self._latex_cache[file_key] = (None, "heuristic_disabled")
+                return None, "heuristic_disabled"
+
+            ole = olefile.OleFileIO(ole_path)
+
+            candidate_texts = []
+
+            # 先扫描全部流，兼容不同版本 MathType OLE 布局。
+            for stream in ole.listdir():
+                try:
+                    stream_data = ole.openstream(stream).read()
+                except Exception:
+                    continue
+                candidate_texts.extend(self._extract_text_candidates(stream_data))
+
+            # 兜底：至少读取 Equation Native，避免遗漏。
+            if ole.exists('Equation Native'):
+                native_data = ole.openstream('Equation Native').read()
+                candidate_texts.extend(self._extract_text_candidates(native_data))
+
+            ole.close()
+
+            latex = self._select_best_latex(candidate_texts)
+            if not latex:
+                if file_key:
+                    self._latex_cache[file_key] = (None, "no_latex_candidate")
+                return None, "no_latex_candidate"
+            latex = self._normalize_latex(latex)
+            if not latex:
+                if file_key:
+                    self._latex_cache[file_key] = (None, "latex_normalize_empty")
+                return None, "latex_normalize_empty"
+            if file_key:
+                self._latex_cache[file_key] = (latex, "ok_heuristic")
+            return latex, "ok_heuristic"
+            
+        except Exception as e:
+            logger.error(f"提取 LaTeX 失败: {e}")
+            return None, "extract_exception"
+
+    def _build_file_cache_key(self, ole_path: str) -> Optional[str]:
+        try:
+            with open(ole_path, "rb") as f:
+                return hashlib.sha1(f.read()).hexdigest()
+        except OSError:
+            return None
+
+    def _extract_text_candidates(self, data: bytes) -> list[str]:
+        """从二进制流中提取可能的 LaTeX 文本片段。"""
+        results: list[str] = []
+        if not data:
+            return results
+
+        for encoding in ("utf-8", "utf-16le", "latin-1"):
+            try:
+                text = data.decode(encoding, errors="ignore")
+            except Exception:
+                continue
+            if not text:
+                continue
+            results.extend(self._find_latex_like_segments(text))
+        return results
+
+    def _find_latex_like_segments(self, text: str) -> list[str]:
+        """通过规则提取 latex-like 片段。"""
+        candidates: list[str] = []
+        if not text:
+            return candidates
+
+        # 1) 常见包裹：$$...$$ / $...$ / \[...\]
+        patterns = [
+            r"\$\$(.{1,2000}?)\$\$",
+            r"(?<!\$)\$(.{1,1000}?)(?<!\$)\$",
+            r"\\\[(.{1,2000}?)\\\]",
+        ]
+        for p in patterns:
+            for m in re.finditer(p, text, re.DOTALL):
+                seg = (m.group(1) or "").strip()
+                if seg:
+                    candidates.append(seg)
+
+        # 2) 未包裹但含明显 LaTeX 命令
+        for m in re.finditer(r"([^\r\n]{3,2000})", text):
+            seg = (m.group(1) or "").strip()
+            if self._looks_like_latex(seg):
+                candidates.append(seg)
+
+        return candidates
+
+    def _looks_like_latex(self, text: str) -> bool:
+        if not text or len(text) < 2:
+            return False
+        score = 0
+        if "\\" in text:
+            score += 1
+        if any(tok in text for tok in ("\\frac", "\\sqrt", "\\sum", "\\int", "\\begin", "\\left", "\\right")):
+            score += 2
+        if "{" in text and "}" in text:
+            score += 1
+        if any(tok in text for tok in ("^", "_")):
+            score += 1
+        return score >= 2
+
+    def _select_best_latex(self, candidates: list[str]) -> Optional[str]:
+        """从候选中选择最可信的一条。"""
+        if not candidates:
+            return None
+
+        normalized = []
+        seen = set()
+        for c in candidates:
+            s = self._normalize_latex(c)
+            if not s:
+                continue
+            if s in seen:
+                continue
+            seen.add(s)
+            normalized.append(s)
+
+        if not normalized:
+            return None
+
+        normalized.sort(key=lambda s: (self._latex_quality_score(s), len(s)), reverse=True)
+        for best in normalized:
+            if not self._looks_like_latex(best):
+                continue
+            if not self._is_plausible_math_latex(best):
+                continue
+            return best
+        return None
+
+    def _latex_quality_score(self, text: str) -> int:
+        score = 0
+        for tok in ("\\frac", "\\sqrt", "\\sum", "\\int", "\\alpha", "\\beta", "\\begin", "\\end"):
+            if tok in text:
+                score += 2
+        score += text.count("\\")
+        score += text.count("{") + text.count("}")
+        return score
+
+    def _normalize_latex(self, text: str) -> str:
+        s = (text or "").strip()
+        if not s:
+            return ""
+        s = s.replace("\x00", "")
+        s = re.sub(r"\s+", " ", s).strip()
+        s = s.strip("$")
+        s = s.replace("\\\\", "\\")
+        # 去掉常见外围包装，统一由上层决定 inline/block
+        if s.startswith("\\(") and s.endswith("\\)"):
+            s = s[2:-2].strip()
+        if s.startswith("\\[") and s.endswith("\\]"):
+            s = s[2:-2].strip()
+        # 清理明显非数学噪音
+        s = re.sub(r"[^\S\r\n]+", " ", s).strip()
+        if len(s) > 2000:
+            s = s[:2000].rstrip()
+        return s
+
+    def _is_plausible_math_latex(self, text: str) -> bool:
+        """
+        过滤 OLE 噪声字符串，避免把二进制碎片误渲染成“伪 LaTeX”。
+        """
+        if not text:
+            return False
+
+        lower = text.lower()
+        noisy_markers = (
+            "design science",
+            "teX input language".lower(),
+            "winallbasiccodepages",
+            "winallcodepages",
+            "times new roman",
+            "courier new",
+            "mt extra",
+            "dsmt",
+        )
+        if any(m in lower for m in noisy_markers):
+            return False
+
+        # 过多异常字符通常表示二进制解码噪声
+        bad_chars = 0
+        for ch in text:
+            o = ord(ch)
+            if ch in "\t\r\n":
+                continue
+            if o < 32:
+                bad_chars += 1
+                continue
+            if 0xFFFD == o:
+                bad_chars += 1
+        if bad_chars > 0:
+            return False
+
+        # 数学 LaTeX 通常不会含大量自然语言片段
+        alpha_words = re.findall(r"[A-Za-z]{4,}", text)
+        if len(alpha_words) >= 8 and text.count("\\") < 4:
+            return False
+
+        return True

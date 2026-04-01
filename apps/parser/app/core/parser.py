@@ -39,6 +39,8 @@ class DocxParser:
         self.docx_zip = None
         self.relationships = {}
         self.media_map = {}
+        self.mathtype_latex_map = {}
+        self.mathtype_latex_status_map = {}
         self._has_omml = False  # 标记是否找到OMML公式
         self._has_vml_shapes = False  # 标记是否找到VML图形
         
@@ -122,6 +124,10 @@ class DocxParser:
                         str(output_file),
                         dpi=300
                     )
+                    extracted_latex, latex_status = mathtype_parser.extract_latex_with_detail(str(temp_ole_path))
+                    self.mathtype_latex_status_map[original_filename] = latex_status
+                    if extracted_latex:
+                        self.mathtype_latex_map[original_filename] = extracted_latex
 
                     if success:
                         print(f"MathType OLE 转换成功: {original_filename} -> {new_filename}")
@@ -416,6 +422,8 @@ class DocxParser:
                         # 关键：即使暂未成功转图，也保留 mathtype_ole 语义，避免退化成 wmf_preview
                         converted_filename = self.media_map.get(ole_filename, '')
                         preview_filename = ""
+                        extracted_latex = self.mathtype_latex_map.get(ole_filename, "")
+                        latex_status = self.mathtype_latex_status_map.get(ole_filename, "")
                         if isinstance(shape_info, dict):
                             preview_filename = shape_info.get("filename", "") or ""
                         return {
@@ -425,6 +433,8 @@ class DocxParser:
                             'ole_filename': ole_filename,
                             'ole_converted_filename': converted_filename,
                             'preview_filename': preview_filename,
+                            'latex': extracted_latex,
+                            'latex_status': latex_status,
                             'rel_id': r_id,
                         }
                     
@@ -581,6 +591,10 @@ def parse_docx(file_path: str, extract_images: bool = True, image_output_dir: st
             source_image_dir=image_output_dir,
         )
         result['formula_render_summary'] = _summarize_formula_render_plan(result['formula_render_plan'])
+        # 无论是否形成 formula_assets，都暴露 MathType LaTeX 提取状态，便于确认 external 是否被调用
+        mt_status_summary = _summarize_mathtype_latex_status(parser.mathtype_latex_status_map)
+        result['mathtype_latex_status'] = mt_status_summary
+        result['formula_render_summary']['mathtype_latex_status'] = mt_status_summary
 
         # 文档级元数据：为复杂数学试卷提供整体统计信息
         total_formulas = 0
@@ -698,16 +712,24 @@ def _build_formula_assets(paragraphs: List[Dict[str, Any]], file_id: Optional[st
                 if isinstance(info, dict):
                     image_filename = info.get("filename", "")
                     meta_type = info.get("type", "")
+                    extracted_latex = str(info.get("latex", "") or "").strip()
+                    latex_status = str(info.get("latex_status", "") or "").strip()
                     original_filename = str(info.get("original_filename", "") or "")
                     preview_filename = str(info.get("preview_filename", "") or "")
                 else:
                     image_filename = ""
                     meta_type = ""
+                    extracted_latex = ""
+                    latex_status = ""
                     original_filename = ""
                     preview_filename = ""
                 if meta_type == "mathtype_ole":
+                    if extracted_latex:
+                        source_type = "mathtype_latex"
+                        display_type = "inline"
+                        latex = extracted_latex
                     # 若 OLE 转图失败但携带了预览 WMF/EMF，回退走 wmf_preview，保证可渲染路径
-                    if image_filename.lower().endswith((".wmf", ".emf")):
+                    elif image_filename.lower().endswith((".wmf", ".emf")):
                         source_type = "wmf_preview"
                         display_type = "inline"
                     else:
@@ -749,6 +771,8 @@ def _build_formula_assets(paragraphs: List[Dict[str, Any]], file_id: Optional[st
                 # P1 预留：后续可携带更多调试信息
                 "meta": {},
             }
+            if source_type in ("mathtype_latex", "mathtype_ole") and latex_status:
+                asset["meta"]["mathtype_latex_status"] = latex_status
             assets.append(asset)
             refs.append(asset_id)
 
@@ -769,6 +793,7 @@ def _summarize_formula_render_plan(render_plan: List[Dict[str, Any]]) -> Dict[st
         "by_source_type": {},
         "by_action": {},
         "by_note": {},
+        "mathtype_latex_status": {},
     }
     for item in render_plan or []:
         if not isinstance(item, dict):
@@ -792,4 +817,19 @@ def _summarize_formula_render_plan(render_plan: List[Dict[str, Any]]) -> Dict[st
         source_type = str(item.get("source_type", "unknown"))
         by_type = summary["by_source_type"]
         by_type[source_type] = by_type.get(source_type, 0) + 1
+        meta = item.get("meta") or {}
+        if isinstance(meta, dict):
+            mt_status = str(meta.get("mathtype_latex_status", "")).strip()
+            if mt_status:
+                mt_map = summary["mathtype_latex_status"]
+                mt_map[mt_status] = mt_map.get(mt_status, 0) + 1
+    return summary
+
+
+def _summarize_mathtype_latex_status(status_map: Dict[str, str]) -> Dict[str, int]:
+    """汇总 MathType LaTeX 提取状态码计数。"""
+    summary: Dict[str, int] = {}
+    for _name, status in (status_map or {}).items():
+        key = str(status or "").strip() or "unknown"
+        summary[key] = summary.get(key, 0) + 1
     return summary

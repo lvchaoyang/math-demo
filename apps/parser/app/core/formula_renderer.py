@@ -61,6 +61,8 @@ class FormulaRenderer:
             source_type = asset.get("source_type")
             if source_type == "omml":
                 action = "render_from_latex"
+            elif source_type == "mathtype_latex":
+                action = "render_from_latex"
             elif source_type == "mathtype_ole":
                 action = "use_mathtype_png"
             elif source_type == "wmf_preview":
@@ -74,7 +76,7 @@ class FormulaRenderer:
             source_filename = None
             source_path = None
 
-            if source_type == "omml" and render_omml:
+            if source_type in ("omml", "mathtype_latex") and render_omml:
                 latex = (asset.get("latex") or "").strip()
                 if not latex:
                     status = "source_only"
@@ -132,6 +134,7 @@ class FormulaRenderer:
                     "status": status,
                     "note": note,
                     "rendered_image": rendered_image,
+                    "meta": asset.get("meta") or {},
                 }
             )
 

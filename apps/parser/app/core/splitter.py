@@ -432,6 +432,10 @@ class QuestionSplitter:
                     img_info = item['content']
                     if isinstance(img_info, dict) and 'filename' in img_info:
                         question.images.append(img_info['filename'])
+                    if isinstance(img_info, dict):
+                        mt_latex = str(img_info.get('latex', '') or '').strip()
+                        if mt_latex:
+                            latex_formulas.append(mt_latex)
         
         question.content_html = ' '.join(content_parts)
         question.latex_formulas = latex_formulas
@@ -446,18 +450,23 @@ class QuestionSplitter:
             option_html = f'<span class="option-label">{label}.</span> '
             
             para_html = self._paragraph_to_html(para)
+            option_html_map = self._extract_option_html_map(para_html) if para_html else {}
+            option_segment_html = option_html_map.get(label, "").strip()
             if para_html:
-                option_match = re.match(rf'^{label}\s*[\.、．]\s*', para_html)
-                if option_match:
-                    option_html += para_html[option_match.end():]
+                if option_segment_html:
+                    option_html += option_segment_html
                 else:
                     option_html += self._escape_html(content)
             else:
                 option_html += self._escape_html(content)
             
-            if option_images:
+            if option_images and not option_segment_html:
                 for img in option_images:
                     option_html += f' {self._format_image(img, "option-image")} '
+                    if img not in question.images:
+                        question.images.append(img)
+            elif option_images:
+                for img in option_images:
                     if img not in question.images:
                         question.images.append(img)
             
@@ -473,6 +482,27 @@ class QuestionSplitter:
         
         self._clean_question_content(question)
         self.questions.append(question)
+
+    def _extract_option_html_map(self, para_html: str) -> Dict[str, str]:
+        """
+        从整段 para_html 里按 A./B./C./D. 切分每个选项的 HTML 内容。
+        这样能保留选项中的公式/图片，不会退化成纯文本。
+        """
+        if not para_html:
+            return {}
+        pattern = re.compile(r'([A-H])\s*[\.、．]\s*')
+        matches = list(pattern.finditer(para_html))
+        if not matches:
+            return {}
+        result: Dict[str, str] = {}
+        for i, m in enumerate(matches):
+            label = m.group(1)
+            start = m.end()
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(para_html)
+            seg = para_html[start:end].strip()
+            if seg:
+                result[label] = seg
+        return result
     
     def _clean_question_content(self, question: Question):
         """清理题目内容"""
@@ -528,6 +558,12 @@ class QuestionSplitter:
                     parts.append(self._format_block_formula(content))
             elif item_type == 'image':
                 if isinstance(content, dict):
+                    mt_latex = str(content.get('latex', '') or '').strip()
+                    if mt_latex:
+                        if parts and not parts[-1].endswith(' '):
+                            parts.append(' ')
+                        parts.append(self._format_inline_formula(mt_latex))
+                        continue
                     img_src = rendered_formula_filename or content.get('filename', '')
                     if not img_src:
                         continue
