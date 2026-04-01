@@ -668,6 +668,21 @@ class WordExporter:
         if element.name == "img":
             self._emit_img_tag(paragraph, element)
             return
+        # 优先把 math-inline/math-block 映射为原公式图，避免导出为裸 LaTeX 文本
+        if element.name in ("span", "div"):
+            classes = element.get("class") or []
+            if isinstance(classes, str):
+                classes = [classes]
+            is_math_node = any(c in ("math-inline", "math-block", "math-display") for c in classes)
+            if is_math_node:
+                data_image = (element.get("data-image") or "").strip()
+                if data_image:
+                    pth = self._resolve_image_path(data_image)
+                    if pth:
+                        run = paragraph.add_run()
+                        img_classes = ["formula-image-block"] if "math-block" in classes or "math-display" in classes else ["formula-image"]
+                        self._add_picture_to_run(run, pth, img_classes)
+                        return
         for child in element.children:
             if isinstance(child, NavigableString):
                 s = str(child)

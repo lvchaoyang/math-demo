@@ -1,0 +1,12 @@
+# MathType SDK sample clone: track source only, not binaries / IDE / installers
+.vs/
+**/bin/
+**/obj/
+DLL/
+Backup/
+UpgradeLog.htm
+*.msi
+*.suo
+*.user
+*.exe
+MTGETEQUATIONADDIN/MTGetEquationAddinSetup/

@@ -6,6 +6,9 @@ __pycache__/
 .env.local
 .env.*.local
 data/
+# Allow MathType sample fixture folder (not Parser `data/` runtime dir)
+!tools/latexToMathType/**/Data/
+!tools/latexToMathType/**/Data/**
 logs/
 *.log
 .idea/
@@ -15,3 +18,10 @@ dist/
 build/
 .venv/
 venv/
+
+# MathType / local tooling (binaries & build output)
+tools/mtef-go.exe
+tools/mathtype-latex-bridge/bin/
+tools/mathtype-latex-bridge/obj/
+tools/latexToMathType/**/bin/
+tools/latexToMathType/**/obj/

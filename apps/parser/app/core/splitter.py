@@ -560,9 +560,10 @@ class QuestionSplitter:
                 if isinstance(content, dict):
                     mt_latex = str(content.get('latex', '') or '').strip()
                     if mt_latex:
+                        src_img = str(content.get('filename', '') or '').strip()
                         if parts and not parts[-1].endswith(' '):
                             parts.append(' ')
-                        parts.append(self._format_inline_formula(mt_latex))
+                        parts.append(self._format_inline_formula(mt_latex, source_image=src_img))
                         continue
                     img_src = rendered_formula_filename or content.get('filename', '')
                     if not img_src:
@@ -584,13 +585,17 @@ class QuestionSplitter:
         text = text.replace('>', '&gt;')
         return text
     
-    def _format_inline_formula(self, latex: str) -> str:
+    def _format_inline_formula(self, latex: str, source_image: str = "") -> str:
         """格式化行内公式"""
         latex = (latex or '').strip()
         latex_escaped = self._escape_html(latex)
+        image_attr = ""
+        src_img = (source_image or "").strip()
+        if src_img:
+            image_attr = f' data-image="{self._escape_html(src_img)}"'
         # 注意：这里必须同时对 data-latex 和 innerText 做 HTML 转义，
         # 否则 latex 内如果包含 < 或 & 会破坏 DOM，导致 MathJax 渲染错位/重叠。
-        return f'<span class="math-inline" data-latex="{latex_escaped}">${latex_escaped}$</span>'
+        return f'<span class="math-inline" data-latex="{latex_escaped}"{image_attr}>${latex_escaped}$</span>'
     
     def _format_block_formula(self, latex: str) -> str:
         """格式化块级公式"""
