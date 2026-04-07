@@ -120,6 +120,7 @@ import { ElMessage } from 'element-plus'
 import { Download, View, Rank, Close } from '@element-plus/icons-vue'
 import MathRenderer from '../MathRenderer/MathRenderer.vue'
 import type { Question } from '../../types'
+import { waitForMathJaxReady } from '../../utils/mathjaxReady'
 
 export interface AssemblyRow {
   fileId: string
@@ -179,11 +180,14 @@ const syncPreviewRows = () => {
 
 const onPreviewOpened = () => {
   syncPreviewRows()
-  nextTick(() => {
+  nextTick(async () => {
+    const el = document.querySelector('.assembly-preview-dialog .preview-list')
+    if (!el) return
+    const ready = await waitForMathJaxReady()
+    if (!ready) return
     const mj = (window as unknown as { MathJax?: { typesetPromise?: (nodes: Element[]) => Promise<void> } })
       .MathJax
-    const el = document.querySelector('.assembly-preview-dialog .preview-list')
-    if (mj?.typesetPromise && el) {
+    if (mj?.typesetPromise) {
       mj.typesetPromise([el]).catch(() => {})
     }
   })

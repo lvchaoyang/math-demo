@@ -204,6 +204,7 @@ import { Upload, Document, Download } from '@element-plus/icons-vue'
 import QuestionList from '../components/QuestionList/QuestionList.vue'
 import ExportPanel from '../components/ExportPanel/ExportPanel.vue'
 import type { Question } from '../types'
+import { waitForMathJaxReady } from '../utils/mathjaxReady'
 
 interface PaperEntry {
   fileId: string
@@ -439,9 +440,12 @@ const startPollingProgress = (
 }
 
 async function typesetHtmlIfNeeded() {
+  if (!htmlPreviewRef.value) return
+  const ready = await waitForMathJaxReady()
+  if (!ready) return
   const mj = (window as unknown as { MathJax?: { typesetPromise?: (n: Element[]) => Promise<void> } })
     .MathJax
-  if (!mj?.typesetPromise || !htmlPreviewRef.value) return
+  if (!mj?.typesetPromise) return
   const html = htmlContent.value
   try {
     const shouldTypeset =

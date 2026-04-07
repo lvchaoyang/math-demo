@@ -1,8 +1,10 @@
+#if ENABLE_ROCKETMQ
 using org.apache.rocketmq.client.consumer;
 using org.apache.rocketmq.client.consumer.listener;
 using org.apache.rocketmq.client.producer;
 using org.apache.rocketmq.common.consumer;
 using org.apache.rocketmq.common.message;
+#endif
 using System;
 using System.Text;
 using System.Web.Script.Serialization;
@@ -58,6 +60,11 @@ namespace ConvertEquations
                 }
             }
 
+#if !ENABLE_ROCKETMQ
+            Console.Error.WriteLine("ConvertEquations: 请使用 --latex <latex> ；或编译时 /p:EnableRocketMq=true 并准备 tools/latexToMathType/DLL 下的 IKVM/RocketMQ 依赖。");
+            Environment.Exit(1);
+#endif
+#if ENABLE_ROCKETMQ
             Console.WriteLine("---------------------------------------------------------------------------------");
             Console.WriteLine("开始接收消息");
             Console.WriteLine("---------------------------------------------------------------------------------");
@@ -79,6 +86,7 @@ namespace ConvertEquations
             consumer.setPullBatchSize(200);
             consumer.start();
             #endregion
+#endif
         }
 
         private static bool HasArg(string[] args, string name)
@@ -204,6 +212,7 @@ namespace ConvertEquations
               }
           }*/
 
+#if ENABLE_ROCKETMQ
         public class TestListener : MessageListenerConcurrently
         {
             /// <summary>
@@ -273,6 +282,7 @@ namespace ConvertEquations
             }
 
         }
+#endif
 
         public static Boolean InvalidLatex(String latex)
         {
@@ -1037,8 +1047,7 @@ namespace ConvertEquations
 
         public static Boolean ProducterSendMessage(String message)
         {
-
-
+#if ENABLE_ROCKETMQ
             #region 生产消息
             DefaultMQProducer producer = null;
             try
@@ -1063,7 +1072,9 @@ namespace ConvertEquations
             return true;
 
             #endregion
-
+#else
+            return false;
+#endif
         }
 
     }

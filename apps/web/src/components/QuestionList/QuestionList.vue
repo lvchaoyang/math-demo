@@ -239,7 +239,8 @@ const handleSelectAll = (val: boolean | string | number) => {
 
 .question-content {
   margin-left: 24px;
-  line-height: 1.8;
+  /* 与 MathRenderer 内 line-height 协调；过大行高会放大行盒与公式基线差异 */
+  line-height: 1.65;
   color: var(--md-text, #1f2937);
 }
 
@@ -253,12 +254,18 @@ const handleSelectAll = (val: boolean | string | number) => {
 
 .option-item {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 5px;
   padding: 10px 12px;
   background: #f8f9fc;
   border: 1px solid var(--md-border, #e4e7ef);
   border-radius: var(--md-radius-sm, 8px);
+  overflow: visible;
+}
+
+.option-item .math-renderer {
+  flex: 1;
+  min-width: 0;
 }
 
 .option-label {

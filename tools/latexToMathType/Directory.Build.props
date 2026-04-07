@@ -1,0 +1,21 @@
+<Project>
+  <!--
+    net48 引用程序集：NuGet Microsoft.NETFramework.ReferenceAssemblies.net48（先 restore ensure-net48-ref）。
+    勿使用 $(NuGetPackageRoot)：dotnet msbuild 旧式工程里常被设错。
+  -->
+  <PropertyGroup>
+    <TargetFrameworkIdentifier>.NETFramework</TargetFrameworkIdentifier>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <Net48RefAssembliesPkgVer>1.0.3</Net48RefAssembliesPkgVer>
+    <OfficeInteropWordPkgVersion>15.0.4797.1004</OfficeInteropWordPkgVersion>
+    <_NuGetGlobalRoot Condition="'$(NUGET_PACKAGES)' != ''">$(NUGET_PACKAGES)</_NuGetGlobalRoot>
+    <_NuGetGlobalRoot Condition="'$(_NuGetGlobalRoot)' == ''">$(UserProfile)\.nuget\packages</_NuGetGlobalRoot>
+  </PropertyGroup>
+  <PropertyGroup Condition="!HasTrailingSlash('$(_NuGetGlobalRoot)')">
+    <_NuGetGlobalRoot>$(_NuGetGlobalRoot)\</_NuGetGlobalRoot>
+  </PropertyGroup>
+  <PropertyGroup>
+    <_Net48RefTargets>$(_NuGetGlobalRoot)microsoft.netframework.referenceassemblies.net48\$(Net48RefAssembliesPkgVer)\build\Microsoft.NETFramework.ReferenceAssemblies.net48.targets</_Net48RefTargets>
+  </PropertyGroup>
+  <Import Project="$(_Net48RefTargets)" Condition="Exists('$(_Net48RefTargets)')" />
+</Project>

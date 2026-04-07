@@ -1,3 +1,7 @@
+import './mathjax-bootstrap'
+/* SVG 输出不依赖 CHTML 的 woff2 字体路径；Vite 打包后 CHTML 常因字体未正确加载出现根号横线错位、竖线像斜杠 */
+import 'mathjax/es5/tex-mml-svg.js'
+
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import ElementPlus from 'element-plus'

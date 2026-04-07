@@ -1,12 +1,13 @@
 # MathType / LaTeX 解析与联调备忘
 
-> 记录日期：2026-04-01  
-> 说明：阶段性记录，后续可继续补充或拆分。
+> 记录日期：2026-04-01；**更新**：2026-04-07（导出答案/解析公式、Word 公式目标说明）  
+> 说明：阶段性记录；**第五节**为可复制给协作者/AI 的一键上下文。
 
 ## 一、已做事项（摘要）
 
 ### Parser
 
+- Word 导出：`answer` / `analysis` 中 **`$...$` 行内公式** 与题干同源（MathType OLE → OMML → 斜体）；此前答案整段纯文本导致公式不显示，已修复（见第三节 §5）。
 - MathType OLE 优先尝试提取 LaTeX，失败回退图片；增加噪声过滤与状态码、缓存。
 - 可插拔外部转换：`MATHTYPE_LATEX_CMD`（例如 `mtef-go.exe -f {ole_path}`）、`MATHTYPE_LATEX_MODE`、`MATHTYPE_LATEX_TIMEOUT`。
 - 公式资产与汇总里暴露 `mathtype_latex` 相关状态，便于确认是否走到外部工具。
@@ -85,10 +86,144 @@ echo $env:MATHTYPE_LATEX_TIMEOUT
 
 ---
 
-## 三、后续可能方向（待你决定再动）
+## 三、导出与 ConvertEquations（latexToMathType）
+
+Parser 导出 Word 时，若配置了 **`EXPORT_CONVERT_EQUATIONS_EXE`**，会在 **OMML / 公式图** 之前尝试调用本机 **`ConvertEquations.exe --latex`**。  
+**当前实现**：若 CLI 返回 **OLE** 且嵌入成功，docx 中会写入 **MathType OLE（`w:object` + `word/embeddings/`）**；失败则回退 **OMML** 或 **data-image**。
+
+### 1. 编译 exe（仓库根目录）
+
+```text
+pnpm run build:convert-equations
+```
+
+- 会先 `dotnet restore`：`ensure-net48-ref`、`ensure-office-interop`（Office Interop NuGet），再 `dotnet msbuild` 解决方案。  
+- **NuGet / MSB3644 / COM** 等排错仍见下文「编译与还原」小节。
+
+**默认输出路径**（以本仓库 csproj 为准）：
+
+```text
+tools/latexToMathType/ConvertEquations/ConvertEquations/bin/Release/ConvertEquations.exe
+```
+
+- `Release|Any CPU` 已固定 **`PlatformTarget=x86`**（与 **MT6.dll 为 32 位**一致）；勿改为纯 AnyCPU 在 x64 系统上跑，否则易报无法加载 `MT6.dll`。
+
+### 2. MathType / MT6.dll（必看）
+
+SDK（`MTSDKDN`）通过 **`DllImport("MT6.dll")`** 加载 **MathType 原生库**。
+
+| 说明 | 要点 |
+|------|------|
+| **`MT6.dsc` ≠ `MT6.dll`** | 只有 **`MT6.dll`** 可被加载；根目录仅有 `.dsc` 不够。 |
+| **常见位置** | **`{MathType安装根}\System\MT6.dll`**（例如 `D:\MathType\System\MT6.dll`）。 |
+| **PATH** | 必须把 **`...\MathType\System`** 加入 PATH，**不要**只加 `...\MathType` 根目录。 |
+| **仍报 0x8007007E** | 多为依赖缺失：把 **`System\*.dll`** 复制到 **`ConvertEquations.exe` 同目录**，或确保已装 **VC++ 2015–2022 可再发行组件（x86）**。 |
+
+**当前会话临时 PATH（PowerShell）**：
+
+```powershell
+$env:Path = "D:\MathType\System;" + $env:Path   # 按本机修改盘符与路径
+```
+
+**验证 CLI（应先输出一行 JSON，且含 `ole` 字段）**：
+
+```powershell
+$env:Path = "D:\MathType\System;" + $env:Path
+& "E:\Lvcy\practice\math-demo\tools\latexToMathType\ConvertEquations\ConvertEquations\bin\Release\ConvertEquations.exe" --latex "x^2+1"
+```
+
+### 3. Parser 侧环境变量（导出走 ConvertEquations）
+
+**启动 Parser 的进程**必须能：① 找到 **`ConvertEquations.exe`**；② 加载 **MT6.dll**（同上，**系统/用户 PATH 含 `...\MathType\System`**，或与 exe 同目录已有 DLL）。
+
+```powershell
+$env:EXPORT_CONVERT_EQUATIONS_EXE = "E:\Lvcy\practice\math-demo\tools\latexToMathType\ConvertEquations\ConvertEquations\bin\Release\ConvertEquations.exe"
+$env:EXPORT_CONVERT_EQUATIONS_TIMEOUT = "120"   # 可选，默认 120 秒
+# 可选：OLE 的 ProgID，默认 Equation.DSMT4；老环境可试 Equation.3
+# $env:EXPORT_MATHTYPE_OLE_PROGID = "Equation.DSMT4"
+```
+
+然后 **`pnpm dev`** 或仅起 Parser；并确认 **`apps/api/.env` 中 `PARSER_URL`** 指向实际 Parser 端口（见根目录 `AGENTS.md`）。
+
+### 4. 行为与限制
+
+- **很慢**：每个公式可能调一次 CLI（内部会起 Word）；同一份 docx 内相同 LaTeX 会缓存，避免重复调用。  
+- C# 侧 **`InvalidLatex`** 会拒绝部分 LaTeX，失败则走 OMML/图。  
+- 未设置 **`EXPORT_CONVERT_EQUATIONS_EXE`** 时，不调用该工具，导出以 OMML/图为主。
+
+### 5. 导出 Word 公式形态（目标：MathType 优先）与答案/解析
+
+**目标**：导出得到的 **`.docx` 中公式优先为可编辑的 MathType 对象**（OLE，Word 中双击可进 MathType）；在无法生成 OLE 时依次回退 **Word 原生 OMML**、**公式图**、**斜体占位文本**。
+
+| 环节 | 说明 |
+|------|------|
+| 题干 / 选项 | 来自 `content_html` / `content_html`，按 `math-inline` 等节点插入。 |
+| **答案 / 解析** | 解析结果为纯文本字段 `answer` / `analysis`；其中 **`$...$` 行内公式** 与题干共用同一套逻辑：**ConvertEquations（MathType OLE）→ OMML → 斜体**。此前答案曾整段写入单个 `run`，公式无法排版，已修复。 |
+
+**限制**：若题目里答案、解析在解析阶段 **没有** 以 `$...$`（或其它已支持结构）给出公式，而只是一段纯文字，导出 **无法凭空变成** MathType 对象；需改进拆题或源文档规范。
+
+### 6. 编译与还原（子问题速查）
+
+- **推荐**：`pnpm run build:convert-equations`（华为云 + nuget.org 双源还原）。  
+- **仅官方源**：`pnpm run build:convert-equations:nuget-org`。  
+- **`Directory.Build.props`** 使用 **`NUGET_PACKAGES` 或 `%USERPROFILE%\.nuget\packages`** 定位 net48 与 Office Interop，**勿依赖错误的 `NuGetPackageRoot`**。  
+- **MSB3644**：需 **`TargetFrameworkIdentifier=.NETFramework`**（已在 `tools/latexToMathType/Directory.Build.props`）+ 成功 restore **`Microsoft.NETFramework.ReferenceAssemblies.net48`**。  
+- **MSB4216（ResolveComReference）**：工程已改为 **NuGet `Microsoft.Office.Interop.Word`**，应用 **`dotnet msbuild`** 即可，一般不再依赖本机 COM 解析生成 Interop。
+
+---
+
+## 四、后续可能方向（待你决定再动）
 
 - 导出：Word 内「可编辑公式」若不要求必须是 MathType OLE，可考虑 **LaTeX → OMML** 等服务端方案；若必须 MathType 对象，需 SDK 或等价转换链。
 - 一键启动：可加 `scripts/start-dev-with-mtef.ps1`，在脚本内设置变量后调用 `pnpm dev`。
+
+---
+
+## 五、可复制给 AI / 协作者的上下文（一键粘贴）
+
+下次联调、排错或换机器时，把 **本节整段**（含模板）复制到对话里，并填好 **本机路径** 与 **现象**。第三节有更细的步骤说明。
+
+### 推荐操作顺序（ checklist ）
+
+1. **编译**：仓库根目录 `pnpm run build:convert-equations`。  
+2. **MathType**：确认存在 **`{MathType}\System\MT6.dll`**；**PATH 永久或临时包含 `{MathType}\System`**（不要只加安装根目录）。  
+3. **验证 CLI**（应有一行 JSON，且含 **`ole`**）：
+
+```powershell
+$env:Path = "D:\MathType\System;" + $env:Path   # 改成你的 System 路径
+& "E:\Lvcy\practice\math-demo\tools\latexToMathType\ConvertEquations\ConvertEquations\bin\Release\ConvertEquations.exe" --latex "x^2+1"
+```
+
+4. **Parser**：在同一类环境中设置 **`EXPORT_CONVERT_EQUATIONS_EXE`**（及可选 **`EXPORT_CONVERT_EQUATIONS_TIMEOUT`**），并保证 **运行 Parser 的进程** 也能加载 **MT6.dll**（同上 PATH 或 DLL 与 exe 同目录）。  
+5. **全链路**：`pnpm dev`，`apps/api/.env` 里 **`PARSER_URL`** 正确；Web 导出 docx，用 Word 打开检查公式。
+
+### 发给 AI 的模板（填空后粘贴）
+
+将下方代码块整体复制，把 `【】` 与示例路径改成你的实际情况。
+
+```text
+【项目】math-demo 单仓库；Parser=apps/parser；ConvertEquations=tools/latexToMathType；OLE 嵌入逻辑见 apps/parser/app/core/mathtype_ole_embed.py 与 exporter。
+
+【本机】
+- 仓库根目录：【如 E:\Lvcy\practice\math-demo】
+- MT6.dll：【如 D:\MathType\System\MT6.dll】
+- ConvertEquations.exe：【…\bin\Release\ConvertEquations.exe】
+
+【环境】
+- MathType\System 已加入【用户/系统 PATH / 仅当前 PowerShell 会话】
+- 已执行 pnpm run build:convert-equations：【是/否】
+- CLI --latex 测试结果：【能输出含 ole 的 JSON / 不能，完整报错粘贴】
+
+【Parser】
+- EXPORT_CONVERT_EQUATIONS_EXE：【已设置路径 / 未设置】
+- 若作为服务/IDE 启动：说明 Parser 进程是否继承 PATH（或已拷 DLL 到 exe 目录）
+
+【现象】
+【例如：导出 docx 仍是 OMML / Word 打不开 OLE / Parser 报 …】
+
+【期望】
+【一句话】
+```
 
 ---
 

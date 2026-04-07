@@ -4,6 +4,7 @@
 
 <script setup lang="ts">
 import { ref, watch, nextTick } from 'vue'
+import { waitForMathJaxReady } from '../../utils/mathjaxReady'
 
 interface Props {
   content: string
@@ -49,12 +50,22 @@ const renderMath = async () => {
     props.content.includes('data-latex') ||
     props.content.includes('$')
 
-  if (shouldTypeset && window.MathJax && mathContainer.value) {
-    try {
-      await window.MathJax.typesetPromise([mathContainer.value])
-    } catch (error) {
-      console.error('MathJax 渲染失败:', error)
-    }
+  if (!shouldTypeset || !mathContainer.value) {
+    return
+  }
+  const mjReady = await waitForMathJaxReady()
+  if (!mjReady) {
+    console.warn('MathJax 加载超时，公式可能以源码显示')
+    return
+  }
+  const mj = window.MathJax
+  if (!mj?.typesetPromise) {
+    return
+  }
+  try {
+    await mj.typesetPromise([mathContainer.value])
+  } catch (error) {
+    console.error('MathJax 渲染失败:', error)
   }
 }
 
@@ -62,12 +73,14 @@ watch(() => props.content, renderMath, { immediate: true })
 </script>
 
 <style scoped>
+/* 行内公式与正文混排：不要用 middle 挤压 MathJax 3 CHTML 内部定位（根号横线、上下标会错位） */
 .math-renderer {
   display: block;
+  line-height: 1.65;
 }
 
 .math-renderer :deep(.math-inline) {
-  display: inline-block;
+  display: inline;
   vertical-align: baseline;
   margin: 0 2px;
   line-height: normal;
@@ -81,9 +94,10 @@ watch(() => props.content, renderMath, { immediate: true })
   overflow-x: auto;
 }
 
-.math-renderer :deep(.MathJax),
+/* MathJax 3：与中文混排时基线对齐；勿用 vertical-align: middle */
+.math-renderer :deep(mjx-container),
 .math-renderer :deep(.mjx-container) {
-  vertical-align: middle;
+  vertical-align: baseline;
 }
 
 .math-renderer :deep(.question-image) {

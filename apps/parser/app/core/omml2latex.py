@@ -397,6 +397,19 @@ class OMML2LaTeXConverter:
                     self._process_element(e_child)
         self.latex_buffer.append(' \\\\\n')
     
+    def _normalize_delim_chr(self, ch: str) -> str:
+        """Word OMML 中竖线常有多种 Unicode，统一为 ASCII 竖线或 LaTeX 命令，避免与斜杠混淆。"""
+        if not ch:
+            return ch
+        m = {
+            '\u2223': '|',  # ∣ DIVIDES
+            '\uff5c': '|',  # ｜ FULLWIDTH VERTICAL LINE
+            '\u2502': '|',  # │ BOX DRAWINGS LIGHT VERTICAL
+            '\u2503': '|',  # ┃ HEAVY
+            '\u01c0': '|',  # ǀ LATIN LETTER DENTAL CLICK
+        }
+        return m.get(ch, ch)
+
     def _handle_delimiter(self, elem: ET.Element):
         """处理括号/分隔符 \\left( ... \\right)"""
         beg_char = elem.find('begChr')
@@ -404,6 +417,8 @@ class OMML2LaTeXConverter:
 
         beg = beg_char.get('val', '(') if beg_char is not None else '('
         end = end_char.get('val', ')') if end_char is not None else ')'
+        beg = self._normalize_delim_chr(beg)
+        end = self._normalize_delim_chr(end)
 
         delim_map = {
             '(': '(', ')': ')',
@@ -542,7 +557,7 @@ class OMML2LaTeXConverter:
             '∧': '\\wedge', '∨': '\\vee', '⊕': '\\oplus', '⊗': '\\otimes',
             '⊖': '\\ominus', '⊙': '\\odot', '†': '\\dagger', '‡': '\\ddagger',
             '∞': '\\infty', '∂': '\\partial', '∇': '\\nabla',
-            '√': '\\surd', '∠': '\\angle', '⊥': '\\perp',
+            '∠': '\\angle', '⊥': '\\perp',
             # 关系符
             '≤': '\\leq', '≥': '\\geq', '≡': '\\equiv', '≈': '\\approx',
             '≠': '\\neq', '∼': '\\sim', '≃': '\\simeq', '≅': '\\cong',

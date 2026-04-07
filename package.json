@@ -18,7 +18,10 @@
     "docker:down": "docker-compose down",
     "docker:build": "docker-compose build",
     "build:wmf-gdi": "dotnet build tools/wmf-gdi-render/WmfGdiRender.csproj -c Release",
-    "build:mathtype-latex-bridge": "dotnet build tools/mathtype-latex-bridge/MathTypeLatexBridge.csproj -c Release"
+    "build:mathtype-latex-bridge": "dotnet build tools/mathtype-latex-bridge/MathTypeLatexBridge.csproj -c Release",
+    "build:convert-equations": "dotnet restore tools/latexToMathType/ensure-net48-ref/ensure-net48-ref.csproj --source https://repo.huaweicloud.com/repository/nuget/v3/index.json --source https://api.nuget.org/v3/index.json && dotnet restore tools/latexToMathType/ensure-office-interop/ensure-office-interop.csproj --source https://repo.huaweicloud.com/repository/nuget/v3/index.json --source https://api.nuget.org/v3/index.json && dotnet msbuild tools/latexToMathType/ConvertEquations/ConvertEquations.sln -p:Configuration=Release -p:Platform=\"Any CPU\"",
+    "build:convert-equations:nuget-org": "dotnet restore tools/latexToMathType/ensure-net48-ref/ensure-net48-ref.csproj --source https://api.nuget.org/v3/index.json && dotnet restore tools/latexToMathType/ensure-office-interop/ensure-office-interop.csproj --source https://api.nuget.org/v3/index.json && dotnet msbuild tools/latexToMathType/ConvertEquations/ConvertEquations.sln -p:Configuration=Release -p:Platform=\"Any CPU\"",
+    "build:convert-equations:msbuild": "dotnet msbuild tools/latexToMathType/ConvertEquations/ConvertEquations.sln -p:Configuration=Release -p:Platform=\"Any CPU\""
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

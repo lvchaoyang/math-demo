@@ -26,6 +26,13 @@ from docx.oxml import OxmlElement, parse_xml
 
 from .splitter import Question
 from .wmf_converter import WMFConverter
+from .latex_omml_export import latex_to_omml_element, should_try_omml, strip_latex_delimiters
+from .convert_equations_cli import (
+    get_convert_equations_exe,
+    run_latex_to_mathtype_payload,
+    decode_math_type_model,
+)
+from .mathtype_ole_embed import embed_mathtype_ole_in_paragraph, minimal_preview_png_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +90,9 @@ class WordExporter:
         self._embedded_resolved_paths: set = set()
         # 已成功处理过的 <img src>（规范化路径键），避免 DOM 嵌完后正则再往段尾插一遍
         self._embedded_img_src_keys: set = set()
-        
+        self._omml_fail_latex: set = set()
+        self._convert_equations_payload_cache: Dict[str, Optional[Dict[str, Any]]] = {}
+
     def create_document(self, title: str = "", watermark_text: str = None, image_dir: Optional[str] = None) -> Document:
         """
         创建新文档
@@ -101,7 +110,9 @@ class WordExporter:
         self._embedded_basenames = set()
         self._embedded_resolved_paths = set()
         self._embedded_img_src_keys = set()
-        
+        self._omml_fail_latex = set()
+        self._convert_equations_payload_cache = {}
+
         # 设置默认字体
         self._set_default_font()
         
@@ -288,23 +299,24 @@ class WordExporter:
         if question.options:
             self._add_options(question.options)
             
-        # 答案
+        # 答案（与题干一致：$...$ 走 MathType OLE → OMML → 斜体回退）
         if include_answer and question.answer:
             para = self.document.add_paragraph()
             para.paragraph_format.left_indent = Inches(0.3)
-            run = para.add_run(f"【答案】{question.answer}")
+            run = para.add_run("【答案】")
             run.font.size = Pt(10.5)
             run.font.color.rgb = RGBColor(0, 128, 0)
+            self._add_formatted_text(para, question.answer, font_size_pt=10.5)
             
         # 解析
         if include_analysis and question.analysis:
             para = self.document.add_paragraph()
             para.paragraph_format.left_indent = Inches(0.3)
-            run = para.add_run(f"【解析】")
+            run = para.add_run("【解析】")
             run.font.bold = True
             run.font.size = Pt(10.5)
             run.font.color.rgb = RGBColor(0, 0, 255)
-            self._add_formatted_text(para, question.analysis)
+            self._add_formatted_text(para, question.analysis, font_size_pt=10.5)
             
         # 添加空行
         self.document.add_paragraph()
@@ -592,6 +604,141 @@ class WordExporter:
             run = paragraph.add_run()
             self._add_picture_to_run(run, pth, ['formula-image'])
 
+    def _extract_latex_from_math_element(self, element: Tag) -> str:
+        raw = (element.get("data-latex") or "").strip()
+        if raw:
+            return strip_latex_delimiters(html_module.unescape(raw))
+        inner = (element.get_text() or "").strip()
+        return strip_latex_delimiters(inner)
+
+    def _clear_paragraph_text_runs(self, paragraph) -> None:
+        p_el = paragraph._p
+        for child in list(p_el):
+            if child.tag == qn("w:r"):
+                p_el.remove(child)
+
+    def _mark_image_path_as_embedded(self, filename_or_path: str) -> None:
+        raw = (filename_or_path or "").strip()
+        if not raw:
+            return
+        raw = html_module.unescape(raw.replace("\\/", "/").strip())
+        pth: Optional[Path] = None
+        if "/api/v1/images/" in raw or raw.startswith("http"):
+            pth = self._resolve_path_for_img_src(raw)
+        if not pth:
+            pth = self._resolve_image_path(raw) or self._resolve_image_path(Path(raw).name)
+        if not pth:
+            return
+        try:
+            self._embedded_resolved_paths.add(str(pth.resolve()))
+        except OSError:
+            self._embedded_resolved_paths.add(str(pth))
+        self._embedded_basenames.add(Path(pth).name)
+
+    def _try_insert_math_omml(self, paragraph, element: Tag) -> bool:
+        classes = element.get("class") or []
+        if isinstance(classes, str):
+            classes = [classes]
+        is_block = any(c in ("math-block", "math-display") for c in classes)
+        inline = not is_block
+        latex = self._extract_latex_from_math_element(element)
+        if not latex or not should_try_omml(latex):
+            return False
+        cache_key = f"{'B' if is_block else 'I'}|{latex}"
+        if cache_key in self._omml_fail_latex:
+            return False
+        el = latex_to_omml_element(latex, inline=inline)
+        if el is None:
+            self._omml_fail_latex.add(cache_key)
+            return False
+        try:
+            if inline:
+                run = paragraph.add_run()
+                run._element.append(el)
+            else:
+                self._clear_paragraph_text_runs(paragraph)
+                paragraph._p.append(el)
+            data_img = (element.get("data-image") or "").strip()
+            if data_img:
+                self._mark_image_path_as_embedded(data_img)
+            return True
+        except Exception as e:
+            logger.debug("写入 OMML 到段落失败: %s", e)
+            self._omml_fail_latex.add(cache_key)
+            return False
+
+    def _preview_png_for_mathtype_ole(self, wmf_b: Optional[bytes]) -> bytes:
+        if not wmf_b or len(wmf_b) <= 8:
+            return minimal_preview_png_bytes()
+        tmp_wmf = None
+        tmp_png = None
+        try:
+            conv = WMFConverter()
+            tw = tempfile.NamedTemporaryFile(suffix=".wmf", delete=False)
+            tw.write(wmf_b)
+            tw.flush()
+            tw.close()
+            tmp_wmf = tw.name
+            tp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+            tp.close()
+            tmp_png = tp.name
+            ok, _ = conv.convert(tmp_wmf, tmp_png)
+            if ok and Path(tmp_png).is_file():
+                png = Path(tmp_png).read_bytes()
+                if png:
+                    return png
+        except Exception as e:
+            logger.debug("WMF→PNG 预览失败，使用占位 PNG: %s", e)
+        finally:
+            for p in (tmp_wmf, tmp_png):
+                if p:
+                    try:
+                        Path(p).unlink(missing_ok=True)
+                    except OSError:
+                        pass
+        return minimal_preview_png_bytes()
+
+    def _try_insert_mathtype_via_convert_equations(self, paragraph, element: Tag) -> bool:
+        if get_convert_equations_exe() is None:
+            return False
+        latex = self._extract_latex_from_math_element(element)
+        if not latex:
+            return False
+        classes = element.get("class") or []
+        if isinstance(classes, str):
+            classes = [classes]
+        is_block = any(c in ("math-block", "math-display") for c in classes)
+        if latex not in self._convert_equations_payload_cache:
+            data, err = run_latex_to_mathtype_payload(latex)
+            self._convert_equations_payload_cache[latex] = data
+            if not data:
+                logger.debug("ConvertEquations 未返回数据: %s", err)
+        else:
+            data = self._convert_equations_payload_cache[latex]
+        if not data:
+            return False
+        ole_b, wmf_b = decode_math_type_model(data)
+        if not ole_b:
+            if wmf_b:
+                logger.debug("ConvertEquations 仅返回 WMF（%d 字节），无 OLE，走 OMML/图", len(wmf_b))
+            return False
+        prog_id = (os.environ.get("EXPORT_MATHTYPE_OLE_PROGID") or "").strip() or None
+        png_b = self._preview_png_for_mathtype_ole(wmf_b)
+        ok = embed_mathtype_ole_in_paragraph(
+            paragraph,
+            ole_b,
+            png_b,
+            prog_id=prog_id,
+            is_block=is_block,
+        )
+        if ok:
+            data_img = (element.get("data-image") or "").strip()
+            if data_img:
+                self._mark_image_path_as_embedded(data_img)
+            logger.debug("已内嵌 MathType OLE（%d 字节）", len(ole_b))
+            return True
+        return False
+
     def _fill_stem_root(self, para, root: Tag) -> None:
         """题干根节点：顶层多个 <p> / 块级 <div> 分段落，题号与首段正文同一段。"""
         first_top = True
@@ -668,13 +815,17 @@ class WordExporter:
         if element.name == "img":
             self._emit_img_tag(paragraph, element)
             return
-        # 优先把 math-inline/math-block 映射为原公式图，避免导出为裸 LaTeX 文本
+        # math-inline/math-block：可选 ConvertEquations(OLE) → OMML → data-image → 斜体文本
         if element.name in ("span", "div"):
             classes = element.get("class") or []
             if isinstance(classes, str):
                 classes = [classes]
             is_math_node = any(c in ("math-inline", "math-block", "math-display") for c in classes)
             if is_math_node:
+                if self._try_insert_mathtype_via_convert_equations(paragraph, element):
+                    return
+                if self._try_insert_math_omml(paragraph, element):
+                    return
                 data_image = (element.get("data-image") or "").strip()
                 if data_image:
                     pth = self._resolve_image_path(data_image)
@@ -719,21 +870,46 @@ class WordExporter:
             # 其它标签（如 p、font）：展开子节点
             self._fill_inline(paragraph, child)
 
-    def _add_formatted_text(self, paragraph, text: str):
-        """添加格式化文本（处理 LaTeX 公式）"""
-        # 简单的公式处理：将 $...$ 标记为斜体
-        parts = text.split('$')
-        
+    @staticmethod
+    def _escape_html_body(text: str) -> str:
+        """与 splitter 题干 HTML 一致：正文内 & < >。"""
+        t = (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        return t
+
+    def _synthetic_math_inline_span(self, latex: str) -> Optional[Tag]:
+        """为纯文本中的 $...$ 构造与 content_html 同结构的 math-inline，供 OLE/OMML 插入。"""
+        raw = (latex or "").strip()
+        if not raw:
+            return None
+        attr = html_module.escape(raw, quote=True)
+        body = self._escape_html_body(raw)
+        frag = f'<span class="math-inline" data-latex="{attr}">${body}$</span>'
+        soup = BeautifulSoup(frag, "html.parser")
+        return soup.select_one("span.math-inline")
+
+    def _append_latex_inline_best_effort(self, paragraph, latex: str, font_size_pt: float) -> None:
+        """MathType OLE → OMML → 斜体（与 _fill_inline 中行内公式策略一致，但不递归解析子节点）。"""
+        span = self._synthetic_math_inline_span(latex)
+        if span is None:
+            return
+        if self._try_insert_mathtype_via_convert_equations(paragraph, span):
+            return
+        if self._try_insert_math_omml(paragraph, span):
+            return
+        run = paragraph.add_run(f" ${latex.strip()} ")
+        run.italic = True
+        run.font.size = Pt(font_size_pt)
+
+    def _add_formatted_text(self, paragraph, text: str, font_size_pt: float = 12):
+        """普通文本 + `$...$` 行内公式；公式走 MathType/OMML，与题干同源。"""
+        parts = (text or "").split("$")
         for i, part in enumerate(parts):
-            if i % 2 == 0:  # 普通文本
+            if i % 2 == 0:
                 if part:
                     run = paragraph.add_run(part)
-                    run.font.size = Pt(12)
-            else:  # 公式
-                # 公式使用斜体
-                run = paragraph.add_run(f" {part} ")
-                run.italic = True
-                run.font.size = Pt(12)
+                    run.font.size = Pt(font_size_pt)
+            else:
+                self._append_latex_inline_best_effort(paragraph, part, font_size_pt)
                 
     def _add_options(self, options: List[Any]):
         """添加选项"""
