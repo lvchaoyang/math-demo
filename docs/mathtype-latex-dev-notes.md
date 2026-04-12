@@ -1,7 +1,7 @@
 # MathType / LaTeX 解析与联调备忘
 
-> 记录日期：2026-04-01；**更新**：2026-04-07（导出答案/解析公式、Word 公式目标说明）  
-> 说明：阶段性记录；**第五节**为可复制给协作者/AI 的一键上下文。
+> 记录日期：2026-04-01；**更新**：2026-04-12（第六节：导出公式「乱窜」根因与可复制验证模板）  
+> 说明：阶段性记录；**第五、六节**为可复制给协作者/AI 的一键上下文。
 
 ## 一、已做事项（摘要）
 
@@ -228,3 +228,81 @@ $env:Path = "D:\MathType\System;" + $env:Path   # 改成你的 System 路径
 ---
 
 如需把本节同步到 `DEPLOYMENT.md` 或拆成「运维」与「开发」两篇，再说一声即可。
+
+---
+
+## 六、Word 导出公式「乱窜 / 串题 / 重复嵌」——根因与验证
+
+> 本节记录 **可能原因**（按排查优先级）与 **可复制给 AI 的验证模板**。代码位置以仓库为准：`apps/parser/app/core/exporter.py`、`mathtype_ole_embed.py`、`latex_omml_export.py`、`convert_equations_cli.py`。
+
+### 1. 现象（便于对齐描述）
+
+| 说法 | 含义 |
+|------|------|
+| 乱窜 / 串位 | 公式与前后文字在阅读顺序或视觉上错位，或跑到句尾/下一段 |
+| 串题 | 上一题的式子「嵌进」下一题题干，或内容张冠李戴 |
+| 重复嵌 / 叠字 | 同一位置多层公式或图叠在一起 |
+
+### 2. 可能根因（建议按序号排查）
+
+**A. `w:p` 子节点插入方式不一致（结构性，优先怀疑）**
+
+- 正文、普通图多用 **`paragraph.add_run()` → `CT_P.add_r()`**，内部用 `insert_element_before`，会按 OOXML/python-docx 约定插 `w:r`（在含 `w:hyperlink`、书签等时，落点未必是「物理最后一个子节点」）。
+- MathType OLE 在 **`embed_mathtype_ole_in_paragraph`** 里对整段 `w:r` 使用 **`paragraph._p.append(r_el)`**，始终接在 `w:p` 子列表末尾。
+- **后果**：简单段落往往正常；一旦同段结构变复杂，**`add_r` 与 `append` 的语义分叉**，XML 文档顺序可能与预期读写顺序不一致，表现为窜位、像「上一段内容接错段」。
+
+**B. 同一段混用多种公式载体（版式层）**
+
+- 同一题干内可能交替出现：**MathType OLE（`w:object`）**、**WMF/PNG 图**、**OMML（`m:oMath`）**、斜体回退字。
+- Word 对行内 OLE、Drawing、OMML 的 **基线 / 换行 / 环绕** 处理不一致，易出现 **视觉叠盖** 或 **看起来像重复嵌**。
+
+**C. 外部链路 `ConvertEquations.exe` + Word**
+
+- Python 侧已去掉 **ConvertEquations 返回 payload 的内存缓存**，并对 `ole`/`wmf` 字节做拷贝；若仍稳定出现「固定像上一题」，需怀疑 **C# 进程内是否复用 Word Application、剪贴板或临时文件**（需在工具侧加日志或审计）。
+
+**D. 上游数据：`content_export_segments` / `content_html` 顺序或内容**
+
+- 片段顺序若与真卷不一致，导出只能忠实复现，表现为「公式位置错」。应用 **`EXPORT_DEBUG_SEGMENTS=1`** 打日志对照原 docx。
+
+**E. 已缓解但需知晓的历史问题**
+
+- **`get_or_add_image_part` 按 PNG 去重**：多 OLE 共用预览图曾导致「同图多处」；已通过预览图 **nonce** 等方式缓解（见 `mathtype_ole_embed.py`）。
+- **OMML 节点被 lxml 搬家**：插入前 **克隆 OMML 子树** 再挂接（见 exporter）。
+- **相邻公式片段去重**：易误删不同图；已 **默认关闭**，仅 `EXPORT_SEGMENT_DEDUPE_FORMULAS=1` 时开启。
+
+### 3. 建议验证步骤（可复制执行）
+
+1. **解压 docx**：将导出文件改名为 `.zip`，查看 `word/document.xml` 中该题对应 **`w:p`** 内 **`w:r` / `w:object` / `m:oMath`** 的**子节点顺序**是否与阅读顺序一致。  
+2. **对照日志**：`EXPORT_DEBUG_SEGMENTS=1` 重启 Parser，导出后对照 segment 索引与原文。  
+3. **单引擎对比**：临时 `EXPORT_FORMULA_PRIORITY=omml`（或关闭 ConvertEquations）导出，观察窜动是否明显减轻，以区分 **B** 与 **A/C**。  
+4. **单题 vs 多题**：只导出一题与同一卷多题对比，若仅多题出现「串题」，侧重 **A/C**。
+
+### 4. 发给 AI 的模板（整段复制后填空）
+
+将下方代码块 **整体** 复制到对话，替换 `【】` 内容；可附上 `document.xml` 片段或 `[导出诊断]` 行。
+
+```text
+【项目】math-demo；Word 导出相关：apps/parser/app/core/exporter.py、mathtype_ole_embed.py、convert_equations_cli.py、latex_omml_export.py。
+
+【现象】（勾选或描述）
+- [ ] 乱窜/句内顺序错  [ ] 像上一题嵌进本题  [ ] 重复嵌/叠盖  [ ] 选择题选项缺失或其它：【】
+
+【环境】
+- EXPORT_FORMULA_PRIORITY：【mathtype / omml / auto】
+- ConvertEquations：【在用路径 / 未用】
+- EXPORT_DEBUG_SEGMENTS：【0 / 1】
+- EXPORT_SEGMENT_DEDUPE_FORMULAS：【未设 / 1】
+
+【导出路径】题干走 segments 还是 HTML：【看 Word 里 [导出诊断] stem_mode= 或说明】
+【诊断原文粘贴】
+【粘贴 [导出诊断] 整行或 document.xml 中该题 w:p 片段（可脱敏）】
+
+【已读文档】docs/mathtype-latex-dev-notes.md 第六节「乱窜根因」。
+
+【诉求】请按第六节优先级（A→E）分析最可能原因，并给出下一步验证或代码修改建议。
+```
+
+### 5. 代码改进方向（备忘，非承诺）
+
+- 将 MathType OLE 的 `w:r` 插入改为与 **`CT_P.add_r` / `_insert_r` 同一套语义**，避免与正文 `add_r` 分叉（需改 `mathtype_ole_embed.py` 或 exporter 调用方式）。  
+- ConvertEquations 侧：每次调用打印 **LaTeX 输入与 ole/wmf 长度或 hash**，排除进程内状态串扰。

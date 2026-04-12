@@ -295,11 +295,48 @@ class WordExporter:
                     out.append(dict(x))
         return out
 
+    def _segment_text_blob_has_all_option_labels(self, question: Question) -> bool:
+        """
+        判断 segments 文本里是否已包含本题全部选项标签（行首或换行后的 A. / B、形式）。
+        仅当全部为真时才跳过 _add_options，避免片段未带选项时选择题「无选项」。
+        """
+        opts = getattr(question, "options", None) or []
+        if not opts:
+            return True
+        segs = self._snapshot_stem_export_segments(question)
+        parts: List[str] = []
+        for s in segs:
+            if self._export_segment_kind(s) == "text":
+                parts.append(str(s.get("text") or ""))
+        blob = "\n".join(parts)
+        for opt in opts:
+            lab = str(getattr(opt, "label", "") or "").strip()
+            if not lab:
+                return False
+            pat = rf"(?:^|\n)\s*{re.escape(lab)}\s*[\.\、．]"
+            if not re.search(pat, blob, re.MULTILINE):
+                return False
+        return True
+
+    @staticmethod
+    def _clone_oxml_fragment(el) -> Optional[Any]:
+        """深拷贝 OMML 子树再挂到段落，避免 lxml 把同一节点从上一处移走导致跨段/跨题串公式。"""
+        if el is None:
+            return None
+        try:
+            from lxml import etree
+
+            serialized = etree.tostring(el, encoding="unicode", with_tail=False)
+            return parse_xml(serialized)
+        except Exception as e:
+            logger.debug("OMML 克隆失败，使用原节点: %s", e)
+            return el
+
     def _write_question_stem(self, para, question: Question) -> bool:
         """
         只写本题题干：有 segments 时严格按快照顺序写 text / latex_inline / latex_block / image / paragraph_break；
         无 segments 时回退 content_html 或纯文本。不与其它题目混用数据。
-        返回 True 表示已按 content_export_segments 写入（解析侧片段含题干后的选项等段落，勿再单独写 options）。
+        返回 True 表示已按 content_export_segments 写入；选项是否另写由 add_question 根据片段是否含选项标签决定。
         """
         segments = self._snapshot_stem_export_segments(question)
         logger.debug(
@@ -375,9 +412,13 @@ class WordExporter:
         # 题干：逐题只用本题快照，有 segments 则仅走按段写入（与 content_html 二选一）
         stem_from_segments = self._write_question_stem(para, question)
 
-        # 选项：无 content_export_segments 时从 content_html 写；有 segments 时片段已含选项段落，避免重复
-        if question.options and not stem_from_segments:
-            self._add_options(question.options)
+        # 选项：走 HTML 题干时必写；走 segments 时仅当片段文本能覆盖全部选项标签时才省略（否则补写，避免无选项）
+        if question.options:
+            if (not stem_from_segments) or (
+                stem_from_segments
+                and not self._segment_text_blob_has_all_option_labels(question)
+            ):
+                self._add_options(question.options)
             
         # 答案（与题干一致：$...$ 走 MathType OLE → OMML → 斜体回退）
         if include_answer and question.answer:
@@ -836,13 +877,14 @@ class WordExporter:
         if el is None:
             self._omml_fail_latex.add(cache_key)
             return False
+        el_use = self._clone_oxml_fragment(el)
         try:
             if inline:
                 run = paragraph.add_run()
-                run._element.append(el)
+                run._element.append(el_use)
             else:
                 self._clear_paragraph_text_runs(paragraph)
-                paragraph._p.append(el)
+                paragraph._p.append(el_use)
             data_img = (element.get("data-image") or "").strip()
             if data_img:
                 self._mark_image_path_as_embedded(data_img)
@@ -943,6 +985,10 @@ class WordExporter:
             logger.debug("ConvertEquations 未返回数据: %s", err)
             return False
         ole_b, wmf_b = decode_math_type_model(data)
+        if ole_b:
+            ole_b = bytes(ole_b)
+        if wmf_b:
+            wmf_b = bytes(wmf_b)
         img_cls = ["formula-image-block"] if is_block else ["formula-image"]
 
         # 始终优先 MathType OLE（可编辑），失败再 WMF 图；与 EXPORT_FORMULA_PRIORITY=mathtype 一致
