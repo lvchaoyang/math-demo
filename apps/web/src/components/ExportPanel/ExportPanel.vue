@@ -252,7 +252,9 @@ const handleExport = async () => {
       body: JSON.stringify({
         assembly: previewRows.value.map((r) => ({
           file_id: r.fileId,
-          question_id: r.question.id
+          question_id: r.question.id,
+          // 整题深拷贝发往 API，导出与预览一致（题干 segments + 选项 content_html + images 等）
+          question: JSON.parse(JSON.stringify(r.question)) as Question
         })),
         title: exportForm.title,
         options: {

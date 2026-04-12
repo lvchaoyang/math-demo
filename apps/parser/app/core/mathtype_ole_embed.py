@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import logging
 import re
@@ -34,6 +35,35 @@ def _png_size_pt(png_bytes: bytes) -> tuple[float, float]:
     return (max(w * 72.0 / 96.0, 12.0), max(h * 72.0 / 96.0, 12.0))
 
 
+def unique_preview_png_for_ole(
+    preview_png_bytes: bytes, ole_bytes: bytes, *, nonce: bytes
+) -> bytes:
+    """
+    python-docx 的 get_or_add_image_part 按 PNG 二进制去重。
+    若多道 MathType OLE 共用同一份预览图（如均为占位 PNG、WMF→PNG 相同、或 LaTeX 不同但 OLE 字节相同），
+    Word 里会多处显示同一张预览，表现为「顺序对但式子重复/错位」。
+    nonce 须每次嵌入唯一（如 uuid），使每道 OLE 独占图片部件，避免跨题/同题重复式串图。
+    """
+    from PIL import Image as PILImage
+
+    tag = hashlib.sha256(ole_bytes + nonce).digest()[:3]
+    r, g, b = tag[0], tag[1], tag[2]
+    try:
+        im = PILImage.open(io.BytesIO(preview_png_bytes)).convert("RGBA")
+        w, h = im.size
+        if w < 1 or h < 1:
+            raise ValueError("empty png")
+        px = im.load()
+        px[w - 1, h - 1] = (r, g, b, 255)
+        out = io.BytesIO()
+        im.save(out, format="PNG")
+        return out.getvalue()
+    except Exception:
+        buf = io.BytesIO()
+        PILImage.new("RGB", (16, 16), (r, g, b)).save(buf, format="PNG")
+        return buf.getvalue()
+
+
 def embed_mathtype_ole_in_paragraph(
     paragraph,
     ole_bytes: bytes,
@@ -45,6 +75,7 @@ def embed_mathtype_ole_in_paragraph(
     if not ole_bytes:
         return False
     png_b = preview_png_bytes or minimal_preview_png_bytes()
+    png_b = unique_preview_png_for_ole(png_b, ole_bytes, nonce=uuid.uuid4().bytes)
     pid = (prog_id or "").strip() or _DEFAULT_MATHTYPE_PROGID
 
     doc_part = paragraph.part

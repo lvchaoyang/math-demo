@@ -1,3 +1,13 @@
+/** Parser 题干导出片段，与 Python Question.content_export_segments 对齐 */
+export interface ContentExportSegment {
+  kind: string;
+  text?: string;
+  latex?: string;
+  filename?: string;
+  display?: string;
+  source_image?: string;
+}
+
 export interface Question {
   id: string;
   number: number;
@@ -5,6 +15,10 @@ export interface Question {
   type_name: string;
   content: string;
   content_html: string;
+  /** 本题资源所在上传目录，跨卷导出时 Parser 按题切换 data/images/{file_id}/ */
+  file_id?: string;
+  /** 有则 Word 导出优先按片段顺序写入，避免再解析 content_html */
+  content_export_segments?: ContentExportSegment[];
   options: Option[];
   answer?: string;
   analysis?: string;
@@ -75,6 +89,10 @@ export interface UploadResponse {
 export interface ExportAssemblyItem {
   file_id: string;
   question_id: string;
+  /** 完整题目（与前端当前一致）；优先于内存快照 */
+  question?: Question;
+  /** 有则覆盖本题 content_export_segments：Word 按段导出（含选择题选项段），LaTeX 走 MathType/OMML */
+  content_export_segments?: ContentExportSegment[];
 }
 
 export interface ExportRequest {

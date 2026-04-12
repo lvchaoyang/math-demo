@@ -22,6 +22,12 @@ function fastApiDetailMessage(data: unknown): string | null {
   return null;
 }
 
+/** 深拷贝题目，避免多题导出时 content_export_segments 等与内存快照共享引用导致串题 */
+function cloneQuestionForExport(found: Question, number: number, fileId: string): Question {
+  const raw = JSON.parse(JSON.stringify(found)) as Question;
+  return { ...raw, number, file_id: fileId };
+}
+
 // 导出题目
 router.post('/', async (req, res) => {
   try {
@@ -37,6 +43,7 @@ router.post('/', async (req, res) => {
 
     if (Array.isArray(assembly) && assembly.length > 0) {
       const ordered: Question[] = [];
+      let fromClientFull = 0;
       for (let i = 0; i < assembly.length; i++) {
         const item = assembly[i];
         const fid = item?.file_id;
@@ -65,7 +72,20 @@ router.post('/', async (req, res) => {
             message: `未找到题目 ${qid}，请重新解析后再导出`
           });
         }
-        ordered.push({ ...found, number: i + 1 });
+        const clientQ = item?.question;
+        let row: Question;
+        if (clientQ && typeof clientQ === 'object' && String(clientQ.id) === String(qid)) {
+          fromClientFull += 1;
+          row = cloneQuestionForExport(clientQ as Question, i + 1, fid);
+        } else {
+          row = cloneQuestionForExport(found, i + 1, fid);
+        }
+        // 组卷题干（含选择题选项）：优先用 assembly 显式传入的片段；否则沿用 question / 快照里的 content_export_segments
+        const fromAsm = item?.content_export_segments;
+        if (Array.isArray(fromAsm) && fromAsm.length > 0) {
+          row.content_export_segments = JSON.parse(JSON.stringify(fromAsm)) as Question['content_export_segments'];
+        }
+        ordered.push(row);
       }
       exportFileId = assembly[0]!.file_id;
       exportQuestionIds = ordered.map((q) => q.id);
@@ -78,7 +98,7 @@ router.post('/', async (req, res) => {
         use_questions_payload_order: true
       };
       logger.info(
-        `Export start (assembly): files=${new Set(assembly.map((a) => a.file_id)).size}, questions=${ordered.length}, timeoutMs=${EXPORT_TIMEOUT_MS}`
+        `Export start (assembly): files=${new Set(assembly.map((a) => a.file_id)).size}, questions=${ordered.length}, clientQuestionPayload=${fromClientFull}/${assembly.length}, timeoutMs=${EXPORT_TIMEOUT_MS}`
       );
     } else if (file_id && question_ids && Array.isArray(question_ids) && question_ids.length > 0) {
       exportFileId = file_id;
@@ -95,12 +115,32 @@ router.post('/', async (req, res) => {
       logger.info(
         `Export start: file_id=${file_id}, questions=${question_ids.length}, timeoutMs=${EXPORT_TIMEOUT_MS}, useCached=${Boolean(cachedQuestions)}`
       );
+      // 与 assembly 一致：按 question_ids 顺序重排题目并带 use_questions_payload_order，
+      // 否则 Parser 走 by_id 分支，且整卷 questions 顺序可能与勾选顺序不一致，易出现题干/公式错位。
+      let questionsForParser: Question[] | undefined;
+      if (cachedQuestions) {
+        const ordered: Question[] = [];
+        for (let i = 0; i < question_ids.length; i++) {
+          const qid = question_ids[i];
+          const found = cachedQuestions.find((q) => q.id === qid);
+          if (!found) {
+            return res.status(400).json({
+              success: false,
+              message: `未找到题目 ${String(qid)}，请重新解析后再导出`
+            });
+          }
+          ordered.push(cloneQuestionForExport(found, i + 1, file_id));
+        }
+        questionsForParser = ordered;
+      }
       exportBody = {
         file_id,
         question_ids,
         options,
         title,
-        ...(cachedQuestions ? { questions: cachedQuestions } : {})
+        ...(questionsForParser?.length
+          ? { questions: questionsForParser, use_questions_payload_order: true }
+          : {})
       };
     } else {
       return res.status(400).json({

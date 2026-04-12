@@ -20,6 +20,16 @@ export interface Option {
   is_latex: boolean;
 }
 
+/** Parser 题干导出片段 */
+export interface ContentExportSegment {
+  kind: string;
+  text?: string;
+  latex?: string;
+  filename?: string;
+  display?: string;
+  source_image?: string;
+}
+
 // 题目
 export interface Question {
   id: string;
@@ -28,6 +38,8 @@ export interface Question {
   type_name: string;
   content: string;
   content_html: string;
+  file_id?: string;
+  content_export_segments?: ContentExportSegment[];
   options: Option[];
   answer?: string;
   analysis?: string;
@@ -58,6 +70,13 @@ export interface UploadResponse {
 export interface ExportAssemblyItem {
   file_id: string;
   question_id: string;
+  /**
+   * 若带上且 id 与 question_id 一致：导出以该完整题目为准（与页面展示一致），含 options/content_html/segments 等。
+   * 仍校验快照中存在该题；file_id、导出题号由 assembly 项强制覆盖。
+   */
+  question?: Question;
+  /** 有则覆盖本题 content_export_segments：按段导出题干与选项，LaTeX 在 Parser 侧转 MathType */
+  content_export_segments?: ContentExportSegment[];
 }
 
 // 导出请求

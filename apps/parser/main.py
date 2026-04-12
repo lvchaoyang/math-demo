@@ -6,6 +6,7 @@ Python 解析服务 - 核心解析层
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.responses import FileResponse, JSONResponse
 from pathlib import Path
+import copy
 import os
 import shutil
 import uuid
@@ -99,6 +100,8 @@ async def parse_document(file: UploadFile = File(...), mode: str = Form("questio
                     "type_name": q.type_name,
                     "content": q.content,
                     "content_html": q.content_html,
+                    "content_export_segments": q.content_export_segments,
+                    "file_id": file_id,
                     "images": q.images,
                     "latex_formulas": q.latex_formulas,
                     "score": q.score,
@@ -227,6 +230,8 @@ async def parse_document_v2(file: UploadFile = File(...), mode: str = Form("ques
                     'type_name': q.type_name,
                     'content': q.content,
                     'content_html': q.content_html,
+                    'content_export_segments': q.content_export_segments,
+                    'file_id': file_id,
                     'images': q.images,
                     'latex_formulas': q.latex_formulas,
                     'score': q.score,
@@ -353,27 +358,32 @@ async def export_questions(data: dict):
         # 跨卷组卷：题目 id 可能重复（如均为 q_0），必须按数组顺序直接使用载荷
         for q in questions_payload:
             if isinstance(q, dict):
-                selected_questions.append(question_from_dict(q))
+                qd = copy.deepcopy(q)
+                if not str(qd.get("file_id") or qd.get("fileId") or "").strip():
+                    qd["file_id"] = file_id
+                selected_questions.append(question_from_dict(qd))
         if not selected_questions:
             raise HTTPException(
                 status_code=400,
                 detail="组卷题目列表为空或格式无效",
             )
     elif questions_payload and isinstance(questions_payload, list) and len(questions_payload) > 0:
-        by_id = {
-            str(q.get("id")): q
-            for q in questions_payload
-            if isinstance(q, dict) and q.get("id") is not None
-        }
+        # 按 question_ids 顺序查找；勿用 id→dict 单键映射（同 id 多卷时后者覆盖前者会串题）
         for qid in question_ids:
-            qd = by_id.get(str(qid))
-            if qd:
-                selected_questions.append(question_from_dict(qd))
-        if not selected_questions:
-            raise HTTPException(
-                status_code=400,
-                detail="未找到需要导出的题目：题目 ID 与缓存不一致，请重新解析后再导出",
-            )
+            q_raw = None
+            for q in questions_payload:
+                if isinstance(q, dict) and str(q.get("id")) == str(qid):
+                    q_raw = q
+                    break
+            if not q_raw:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"未找到需要导出的题目：{qid} 与缓存不一致，请重新解析后再导出",
+                )
+            qd = copy.deepcopy(q_raw)
+            if not str(qd.get("file_id") or qd.get("fileId") or "").strip():
+                qd["file_id"] = file_id
+            selected_questions.append(question_from_dict(qd))
     else:
         # 无缓存题目时重新解析整卷（较慢）
         candidates = sorted(list(UPLOAD_DIR.glob(f"{file_id}_*.docx")))
@@ -392,7 +402,13 @@ async def export_questions(data: dict):
             file_id=file_id,
             formula_render_plan=result.get("formula_render_plan"),
         )
-        selected_questions = [q for q in questions if q.id in set(question_ids)]
+        id_to_q = {str(q.id): q for q in questions}
+        selected_questions = []
+        for qid in question_ids:
+            k = str(qid)
+            if k not in id_to_q:
+                raise HTTPException(status_code=400, detail=f"未找到题目 {qid}")
+            selected_questions.append(id_to_q[k])
 
         if not selected_questions:
             raise HTTPException(status_code=400, detail="未找到需要导出的题目")
@@ -421,4 +437,15 @@ if __name__ == "__main__":
     import uvicorn
 
     port = int(os.environ.get("PARSER_PORT", "8000"))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    # 开发时改 exporter 等代码后需重启进程；设 PARSER_RELOAD=1 可启用自动重载（略增启动开销）
+    _here = Path(__file__).resolve().parent
+    if (os.environ.get("PARSER_RELOAD") or "").strip().lower() in ("1", "true", "yes"):
+        uvicorn.run(
+            "main:app",
+            host="0.0.0.0",
+            port=port,
+            reload=True,
+            reload_dirs=[str(_here)],
+        )
+    else:
+        uvicorn.run(app, host="0.0.0.0", port=port)

@@ -4,6 +4,7 @@
 改进：更准确的题号识别、选项解析、答案提取
 """
 
+import copy
 import re
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
@@ -51,6 +52,10 @@ class Question:
     images: List[str] = field(default_factory=list)
     latex_formulas: List[str] = field(default_factory=list)
     raw_paragraphs: List[Dict] = field(default_factory=list)
+    # 导出专用：与 content_html 同源顺序，避免导出时再解析 HTML；元素 kind 见 _paragraph_to_export_segments
+    content_export_segments: List[Dict[str, Any]] = field(default_factory=list)
+    # 本题图片/公式资源所在上传目录（与 data/images/{file_id}/ 一致）；跨卷导出时必须按题切换
+    file_id: Optional[str] = None
 
 
 class QuestionSplitter:
@@ -207,7 +212,8 @@ class QuestionSplitter:
                     type=self.current_type,
                     type_name=self.current_type_name,
                     content="",
-                    content_html=""
+                    content_html="",
+                    file_id=(self.file_id or None),
                 )
                 current_paragraphs = [para]
                 current_options_data = []
@@ -419,11 +425,17 @@ class QuestionSplitter:
         
         content_parts = []
         latex_formulas = []
-        
+        export_segments: List[Dict[str, Any]] = []
+
         for para in paragraphs:
             html_part = self._paragraph_to_html(para)
             if html_part:
                 content_parts.append(html_part)
+            para_seg = self._paragraph_to_export_segments(para)
+            if para_seg:
+                if export_segments:
+                    export_segments.append({"kind": "paragraph_break"})
+                export_segments.extend(para_seg)
             
             for item in para.get('content_items', []):
                 if item['type'] in ['latex', 'latex_block']:
@@ -439,6 +451,7 @@ class QuestionSplitter:
         
         question.content_html = ' '.join(content_parts)
         question.latex_formulas = latex_formulas
+        question.content_export_segments = export_segments
         
         for option_item in options_data:
             if len(option_item) == 4:
@@ -515,6 +528,97 @@ class QuestionSplitter:
         
         question.content = re.sub(r'\s+', ' ', question.content).strip()
     
+    def _paragraph_to_export_segments(self, para: Dict) -> List[Dict[str, Any]]:
+        """
+        与 _paragraph_to_html 同一套 content_items / formula_refs 语义，输出结构化片段供 Word 导出直写。
+        kind: text | latex_inline | latex_block | image | paragraph_break（段落间由上层插入）
+        """
+        out: List[Dict[str, Any]] = []
+        content_items = para.get('content_items', [])
+        if not content_items:
+            return out
+        only_images = bool(content_items) and all(i.get('type') == 'image' for i in content_items)
+        formula_refs = para.get('formula_asset_refs') or []
+        formula_ref_cursor = 0
+
+        def append_space_if_needed():
+            if not out:
+                return
+            prev = out[-1]
+            if prev.get('kind') == 'text' and str(prev.get('text', '')).endswith(' '):
+                return
+            if prev.get('kind') == 'text':
+                prev['text'] = str(prev.get('text', '')) + ' '
+                return
+            out.append({'kind': 'text', 'text': ' '})
+
+        for item in content_items:
+            item_type = item['type']
+            content = item['content']
+            rendered_formula_filename = None
+            if item_type in ['latex', 'latex_block', 'image'] and formula_ref_cursor < len(formula_refs):
+                asset_id = formula_refs[formula_ref_cursor]
+                formula_ref_cursor += 1
+                rendered_formula_filename = self._get_rendered_formula_filename(asset_id)
+
+            if item_type == 'text':
+                t = content if isinstance(content, str) else ''
+                if t:
+                    if out:
+                        lp = out[-1]
+                        if lp.get('kind') == 'text':
+                            lt = str(lp.get('text', ''))
+                            if lt and not lt.endswith(' ') and not t.startswith(' '):
+                                lp['text'] = lt + ' '
+                        elif lp.get('kind') != 'text':
+                            append_space_if_needed()
+                    out.append({'kind': 'text', 'text': t})
+            elif item_type == 'latex':
+                append_space_if_needed()
+                if rendered_formula_filename:
+                    out.append(
+                        {
+                            'kind': 'image',
+                            'filename': str(rendered_formula_filename),
+                            'display': 'inline',
+                        }
+                    )
+                else:
+                    out.append({'kind': 'latex_inline', 'latex': (content or '').strip()})
+            elif item_type == 'latex_block':
+                append_space_if_needed()
+                if rendered_formula_filename:
+                    out.append(
+                        {
+                            'kind': 'image',
+                            'filename': str(rendered_formula_filename),
+                            'display': 'block',
+                        }
+                    )
+                else:
+                    out.append({'kind': 'latex_block', 'latex': (content or '').strip()})
+            elif item_type == 'image':
+                if not isinstance(content, dict):
+                    continue
+                mt_latex = str(content.get('latex', '') or '').strip()
+                if mt_latex:
+                    append_space_if_needed()
+                    out.append(
+                        {
+                            'kind': 'latex_inline',
+                            'latex': mt_latex,
+                            'source_image': str(content.get('filename', '') or '').strip(),
+                        }
+                    )
+                    continue
+                img_src = rendered_formula_filename or content.get('filename', '')
+                if not img_src:
+                    continue
+                append_space_if_needed()
+                disp = 'block' if only_images else 'inline'
+                out.append({'kind': 'image', 'filename': str(img_src), 'display': disp})
+        return out
+
     def _paragraph_to_html(self, para: Dict) -> str:
         """将段落转换为 HTML"""
         parts = []
@@ -641,6 +745,22 @@ def question_from_dict(d: Dict[str, Any]) -> Question:
                 images=list(o.get('images') or []),
             )
         )
+    raw_seg = d.get('content_export_segments')
+    if raw_seg is None:
+        raw_seg = d.get('contentExportSegments')
+    export_segments: List[Dict[str, Any]] = []
+    if isinstance(raw_seg, list):
+        for x in raw_seg:
+            if not isinstance(x, dict):
+                continue
+            # 与 exporter 一致：允许 kind 或 type；勿用 truthy 判断 kind，避免误丢合法片段
+            if x.get('kind') is None and x.get('type') is None:
+                continue
+            export_segments.append(copy.deepcopy(x))
+
+    fid_raw = d.get('file_id') if d.get('file_id') is not None else d.get('fileId')
+    q_file_id = str(fid_raw).strip() if fid_raw else None
+
     return Question(
         id=str(d.get('id', '')),
         number=int(d.get('number', 0)),
@@ -656,6 +776,8 @@ def question_from_dict(d: Dict[str, Any]) -> Question:
         images=list(d.get('images') or []),
         latex_formulas=list(d.get('latex_formulas') or []),
         raw_paragraphs=[],
+        content_export_segments=export_segments,
+        file_id=q_file_id,
     )
 
 

@@ -26,6 +26,8 @@ export interface Question {
   type_name: string
   content: string
   content_html: string
+  /** 本题图片目录（与 data/images/{file_id} 一致），跨卷组卷导出依赖 */
+  file_id?: string
   options: Option[]
   answer?: string
   analysis?: string
@@ -33,6 +35,15 @@ export interface Question {
   difficulty?: string
   images: string[]
   latex_formulas: string[]
+  /** 与 Parser 对齐；导出时可随 assembly 传给 API，题干按段写入 Word */
+  content_export_segments?: Array<{
+    kind: string
+    text?: string
+    latex?: string
+    filename?: string
+    display?: string
+    source_image?: string
+  }>
   confidence_score?: number
   low_confidence?: boolean
   low_confidence_reasons?: string[]
@@ -51,6 +62,10 @@ export interface UploadResponse {
 export interface ExportAssemblyItem {
   file_id: string
   question_id: string
+  /** 完整题目，导出以页面数据为准 */
+  question?: Question
+  /** 与 question.content_export_segments 一致时可显式带上；API 会用于覆盖，Word 按段写题干与选项 */
+  content_export_segments?: Question['content_export_segments']
 }
 
 // 导出请求
