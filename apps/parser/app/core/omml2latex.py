@@ -398,10 +398,16 @@ class OMML2LaTeXConverter:
         self.latex_buffer.append(' \\\\\n')
     
     def _normalize_delim_chr(self, ch: str) -> str:
-        """Word OMML 中竖线常有多种 Unicode，统一为 ASCII 竖线或 LaTeX 命令，避免与斜杠混淆。"""
+        """Word OMML 中竖线常有多种 Unicode，统一为 ASCII `|`。
+
+        特别地，Word 方程里「线段长 / 绝对值」两侧常用 U+2016（‖）排版，若映射为 LaTeX
+        `\\|` 会在 MathJax 中显示为双竖线（范数）；中学卷面通常应为单竖线 `|...|`。
+        本函数仅用于 `_handle_delimiter`，不影响矩阵 `Vmatrix`（矩阵走 `_handle_matrix`，不经过此处）。
+        """
         if not ch:
             return ch
         m = {
+            '\u2016': '|',  # ‖ DOUBLE VERTICAL LINE → 单竖线（与 Word 卷面常见「长」记号一致）
             '\u2223': '|',  # ∣ DIVIDES
             '\uff5c': '|',  # ｜ FULLWIDTH VERTICAL LINE
             '\u2502': '|',  # │ BOX DRAWINGS LIGHT VERTICAL
@@ -424,7 +430,8 @@ class OMML2LaTeXConverter:
             '(': '(', ')': ')',
             '[': '[', ']': ']',
             '{': '\\{', '}': '\\}',
-            '|': '|', '‖': '\\|',
+            # ‖ 在 OMML 里常表示「两侧竖线」；映射为 | 而非 \|，避免 MathJax 显示成双竖线范数
+            '|': '|', '‖': '|',
             '⌈': '\\lceil', '⌉': '\\rceil',
             '⌊': '\\lfloor', '⌋': '\\rfloor',
             '⟨': '\\langle', '⟩': '\\rangle',
