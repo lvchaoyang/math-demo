@@ -15,6 +15,7 @@ from app.core.parser import parse_docx
 from app.core.splitter import split_questions, question_from_dict
 from app.core.docx_to_html import convert_docx_to_html
 from app.core.exporter import export_questions as export_questions_to_word
+from app.core.process_cleanup import optional_kill_winword_after_request
 
 app = FastAPI(
     title="Math Demo Parser Service",
@@ -148,6 +149,7 @@ async def parse_document(file: UploadFile = File(...), mode: str = Form("questio
         raise HTTPException(status_code=500, detail=f"解析失败：{str(e)}")
     finally:
         file.file.close()
+        optional_kill_winword_after_request("parse")
 
 
 @app.post("/parse/v2")
@@ -271,6 +273,7 @@ async def parse_document_v2(file: UploadFile = File(...), mode: str = Form("ques
         raise HTTPException(status_code=500, detail=f"解析失败：{str(e)}")
     finally:
         file.file.close()
+        optional_kill_winword_after_request("parse")
 
 
 @app.get("/images/{file_id}/{filename}")
@@ -416,15 +419,18 @@ async def export_questions(data: dict):
     EXPORT_DIR.mkdir(parents=True, exist_ok=True)
     out_path = EXPORT_DIR / f"export_{file_id}_{uuid.uuid4().hex}.docx"
 
-    export_questions_to_word(
-        selected_questions,
-        str(out_path),
-        title=title,
-        watermark=watermark,
-        image_dir=str(image_dir),
-        include_answer=include_answer,
-        include_analysis=include_analysis,
-    )
+    try:
+        export_questions_to_word(
+            selected_questions,
+            str(out_path),
+            title=title,
+            watermark=watermark,
+            image_dir=str(image_dir),
+            include_answer=include_answer,
+            include_analysis=include_analysis,
+        )
+    finally:
+        optional_kill_winword_after_request("export")
 
     return FileResponse(
         path=str(out_path),

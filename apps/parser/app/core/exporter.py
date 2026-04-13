@@ -6,7 +6,6 @@ Word 导出器
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 from datetime import datetime
-from collections import Counter
 import copy
 import io
 import os
@@ -29,25 +28,8 @@ from docx.oxml import OxmlElement, parse_xml
 from .splitter import Question
 from .wmf_converter import WMFConverter
 from .latex_omml_export import latex_to_omml_element, should_try_omml, strip_latex_delimiters
-from .convert_equations_cli import (
-    get_convert_equations_exe,
-    run_latex_to_mathtype_payload,
-    decode_math_type_model,
-)
-from .mathtype_ole_embed import embed_mathtype_ole_in_paragraph, minimal_preview_png_bytes
 
 logger = logging.getLogger(__name__)
-
-
-def _export_diagnostics_to_doc_enabled() -> bool:
-    """
-    默认在 Word 里每题末尾写一行 [导出诊断]，便于排查串题/叠公式。
-    正式卷面不需要时设环境变量：EXPORT_DIAGNOSTICS_TO_DOC=0（或 false/off/no）关闭。
-    """
-    raw = (os.environ.get("EXPORT_DIAGNOSTICS_TO_DOC") or "").strip().lower()
-    if raw in ("0", "false", "no", "off"):
-        return False
-    return True
 
 
 # PIL 不可用或读图失败时的回退宽度（英寸）
@@ -382,14 +364,14 @@ class WordExporter:
                      include_analysis: bool = False):
         """
         添加一题到文档。
-        与其它题隔离：每题入口清空嵌图去重集、ConvertEquations/OMML 缓存；按本题 file_id 切换 image_dir；
+        与其它题隔离：每题入口清空嵌图去重集、OMML 失败缓存；按本题 file_id 切换 image_dir；
         题干仅用传入的 Question（建议调用方每题 deepcopy，避免多题共享嵌套 list/dict）。
         """
         # 每题重置「本题内已嵌图片」集合，避免跨题误伤；题干与选项共用本题集合
         self._embedded_basenames.clear()
         self._embedded_resolved_paths.clear()
         self._embedded_img_src_keys.clear()
-        # 避免上一题的 ConvertEquations/OMML 状态影响本题；latex 字符串跨题偶发碰撞时尤甚
+        # 避免上一题的 OMML 状态影响本题；latex 字符串跨题偶发碰撞时尤甚
         self._omml_fail_latex.clear()
         # 跨卷组卷：每道题图片在 data/images/{该题 file_id}/；勿沿用首卷的 image_dir，否则 rglob 会嵌到别卷同名 wmf
         qfid = (getattr(question, "file_id", None) or "").strip()
@@ -420,7 +402,7 @@ class WordExporter:
             ):
                 self._add_options(question.options)
             
-        # 答案（与题干一致：$...$ 走 MathType OLE → OMML → 斜体回退）
+        # 答案（与题干一致：$...$ 走 OMML，失败则斜体回退）
         if include_answer and question.answer:
             para = self.document.add_paragraph()
             para.paragraph_format.left_indent = Inches(0.3)
@@ -439,85 +421,8 @@ class WordExporter:
             run.font.color.rgb = RGBColor(0, 0, 255)
             self._add_formatted_text(para, question.analysis, font_size_pt=10.5)
 
-        if _export_diagnostics_to_doc_enabled():
-            self._append_question_diagnostics_paragraph(question)
-
         # 添加空行
         self.document.add_paragraph()
-
-    def _append_question_diagnostics_paragraph(self, question: Question) -> None:
-        """每题一条：题干走 segments 还是 HTML、片段统计、目录与公式环境，便于分析串题/叠字根因。"""
-        qfid = (getattr(question, "file_id", None) or "").strip()
-        qid = str(getattr(question, "id", "") or "").strip()
-        segs = self._snapshot_stem_export_segments(question)
-        stem_html = (question.content_html or "").strip()
-        hints: List[str] = []
-
-        if segs:
-            mode = "segments"
-            kinds = Counter(self._export_segment_kind(s) for s in segs if isinstance(s, dict))
-            kinds_s = ",".join(f"{k}:{kinds[k]}" for k in sorted(kinds.keys()) if k)
-            text_dollar = 0
-            api_in_fn = 0
-            for s in segs:
-                if not isinstance(s, dict):
-                    continue
-                if self._export_segment_kind(s) == "text" and "$" in str(s.get("text") or ""):
-                    text_dollar += 1
-                fn = str(s.get("filename") or s.get("source_image") or "")
-                if "/api/v1/images/" in fn or fn.lower().startswith("http"):
-                    api_in_fn += 1
-            if text_dollar:
-                hints.append(f"text段含$共{text_dollar}段(结构化下应无公式$)")
-            if api_in_fn:
-                hints.append(f"片段中URL式路径{api_in_fn}处(靠URL内file_id解析)")
-            detail = f"seg={len(segs)} kinds[{kinds_s}] url字段={api_in_fn}"
-        elif stem_html:
-            mode = "content_html"
-            detail = f"html_len={len(stem_html)}"
-            hints.append("题干走content_html未走segments")
-            if "$" in stem_html:
-                hints.append("HTML含$符_add_formatted_text会拆公式")
-        else:
-            mode = "plain_content"
-            detail = "无segments无html"
-            hints.append("仅纯文本题干")
-
-        if not qfid:
-            hints.append("缺file_id→image_dir用导出首卷目录易同名串图")
-
-        img_dir = self.image_dir
-        dir_ok = bool(img_dir and img_dir.is_dir())
-        if not dir_ok and qfid:
-            hints.append(f"图片目录不存在:{img_dir}")
-
-        ce = get_convert_equations_exe() is not None
-        fpri = self._formula_priority()
-        scope = getattr(self, "_export_formula_scope", "") or ""
-
-        lib_root = self.images_library_root
-        lib_s = str(lib_root) if lib_root else "(none)"
-
-        hint_txt = " | ".join(hints) if hints else "(无)"
-        line = (
-            f"[导出诊断] id={qid or '?'} num={question.number} file_id={qfid or 'MISSING'} "
-            f"stem_mode={mode} {detail} | img_dir_ok={int(dir_ok)} path={img_dir} | "
-            f"lib_root={lib_s} | convert_equations={int(ce)} formula_pri={fpri} scope={scope} "
-            f"|| 研判: {hint_txt}"
-        )
-        if len(line) > 1800:
-            line = line[:1797] + "..."
-
-        p = self.document.add_paragraph()
-        r = p.add_run(line)
-        r.font.size = Pt(8)
-        r.font.color.rgb = RGBColor(96, 96, 96)
-        r.italic = True
-        try:
-            p.paragraph_format.left_indent = Inches(0.12)
-            p.paragraph_format.space_before = Pt(2)
-        except Exception:
-            pass
 
     def _resolve_image_path(self, filename: str) -> Optional[Path]:
         """解析图片在本地磁盘中的真实路径"""
@@ -894,41 +799,10 @@ class WordExporter:
             self._omml_fail_latex.add(cache_key)
             return False
 
-    def _preview_png_for_mathtype_ole(self, wmf_b: Optional[bytes]) -> bytes:
-        if not wmf_b or len(wmf_b) <= 8:
-            return minimal_preview_png_bytes()
-        tmp_wmf = None
-        tmp_png = None
-        try:
-            conv = WMFConverter()
-            tw = tempfile.NamedTemporaryFile(suffix=".wmf", delete=False)
-            tw.write(wmf_b)
-            tw.flush()
-            tw.close()
-            tmp_wmf = tw.name
-            tp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-            tp.close()
-            tmp_png = tp.name
-            ok, _ = conv.convert(tmp_wmf, tmp_png)
-            if ok and Path(tmp_png).is_file():
-                png = Path(tmp_png).read_bytes()
-                if png:
-                    return png
-        except Exception as e:
-            logger.debug("WMF→PNG 预览失败，使用占位 PNG: %s", e)
-        finally:
-            for p in (tmp_wmf, tmp_png):
-                if p:
-                    try:
-                        Path(p).unlink(missing_ok=True)
-                    except OSError:
-                        pass
-        return minimal_preview_png_bytes()
-
     def _emit_latex_plain_fallback(
         self, paragraph, latex: str, *, is_block: bool, font_size_pt: float = 12
     ) -> None:
-        """OMML/OLE/插图均失败时的最后回退：不再调用 ConvertEquations，避免重复插入与 $$ 拆分错乱。"""
+        """OMML 写入失败或无可转换 LaTeX 时的回退：斜体原文，避免与 $$ 拆分逻辑打架。"""
         t = (latex or "").strip()
         if not t:
             return
@@ -943,95 +817,12 @@ class WordExporter:
 
     @staticmethod
     def _formula_priority() -> str:
-        """
-        导出公式（运行 Parser 的进程读取 EXPORT_FORMULA_PRIORITY）：
-        - mathtype（默认）：LaTeX→MathType（OLE，失败则同次输出的 WMF 图）→ 仍失败再 Word OMML（可编辑降级）
-        - omml：OMML 优先，再 MathType
-        - auto：能发现 ConvertEquations.exe 则同 mathtype，否则同 omml
-        """
-        raw = (os.environ.get("EXPORT_FORMULA_PRIORITY") or "mathtype").strip().lower()
-        if raw in ("word", "native", "omml"):
-            return "omml"
-        if raw == "auto":
-            return "mathtype" if get_convert_equations_exe() is not None else "omml"
-        return "mathtype"
+        """导出公式固定为 LaTeX→OMML（Word 原生），不使用 MathType / ConvertEquations / 公式 WMF。"""
+        return "omml"
 
     def _try_formula_engines_order(self, paragraph, element: Tag) -> bool:
-        """默认先 MathType 再 OMML；仅当 EXPORT_FORMULA_PRIORITY=omml 时相反。"""
-        pri = self._formula_priority()
-        if pri == "omml":
-            if self._try_insert_math_omml(paragraph, element):
-                return True
-            return self._try_insert_mathtype_via_convert_equations(paragraph, element)
-        if self._try_insert_mathtype_via_convert_equations(paragraph, element):
-            return True
+        """仅尝试 OMML。"""
         return self._try_insert_math_omml(paragraph, element)
-
-    def _try_insert_mathtype_via_convert_equations(self, paragraph, element: Tag) -> bool:
-        if get_convert_equations_exe() is None:
-            return False
-        latex = self._extract_latex_from_math_element(element)
-        if not latex:
-            return False
-        classes = element.get("class") or []
-        if isinstance(classes, str):
-            classes = [classes]
-        is_block = any(c in ("math-block", "math-display") for c in classes)
-        data_img = (element.get("data-image") or "").strip()
-        # 不在此缓存 ConvertEquations 结果：同 LaTeX 在不同题/不同位置须各自嵌入独立 OLE/关系，
-        # 复用 payload 曾导致 docx 内预览图部件去重后多处以同图指向不同语义，表现为公式串位。
-        data, err = run_latex_to_mathtype_payload(latex)
-        if not data:
-            logger.debug("ConvertEquations 未返回数据: %s", err)
-            return False
-        ole_b, wmf_b = decode_math_type_model(data)
-        if ole_b:
-            ole_b = bytes(ole_b)
-        if wmf_b:
-            wmf_b = bytes(wmf_b)
-        img_cls = ["formula-image-block"] if is_block else ["formula-image"]
-
-        # 始终优先 MathType OLE（可编辑），失败再 WMF 图；与 EXPORT_FORMULA_PRIORITY=mathtype 一致
-        if ole_b:
-            prog_id = (os.environ.get("EXPORT_MATHTYPE_OLE_PROGID") or "").strip() or None
-            png_b = self._preview_png_for_mathtype_ole(wmf_b)
-            ok = embed_mathtype_ole_in_paragraph(
-                paragraph,
-                ole_b,
-                png_b,
-                prog_id=prog_id,
-                is_block=is_block,
-            )
-            if ok:
-                if data_img:
-                    self._mark_image_path_as_embedded(data_img)
-                logger.debug("已内嵌 MathType OLE（%d 字节）", len(ole_b))
-                return True
-            logger.debug("MathType OLE 嵌入失败，尝试 WMF 回退")
-
-        if wmf_b and len(wmf_b) > 8:
-            tmp_wmf: Optional[str] = None
-            try:
-                tw = tempfile.NamedTemporaryFile(suffix=".wmf", delete=False)
-                tw.write(wmf_b)
-                tw.close()
-                tmp_wmf = tw.name
-                run = paragraph.add_run()
-                self._add_picture_to_run(run, Path(tmp_wmf), img_cls)
-                if data_img:
-                    self._mark_image_path_as_embedded(data_img)
-                logger.debug("ConvertEquations 无 OLE 或 OLE 失败，已嵌入 WMF 转图（%d 字节）", len(wmf_b))
-                return True
-            except Exception as e:
-                logger.debug("WMF 嵌入失败: %s", e)
-                return False
-            finally:
-                if tmp_wmf:
-                    try:
-                        Path(tmp_wmf).unlink(missing_ok=True)
-                    except OSError:
-                        pass
-        return False
 
     def _fill_stem_root(self, para, root: Tag) -> None:
         """题干根节点：顶层多个 <p> / 块级 <div> 分段落，题号与首段正文同一段。"""
@@ -1159,8 +950,7 @@ class WordExporter:
         src_img = str(seg.get("source_image") or "").strip()
         if not latex and not src_img:
             return
-        # 与 _fill_inline 一致：优先 LaTeX→MathType/OMML（可编辑），失败再用原卷 source_image，最后斜体 LaTeX。
-        # data-image 参与 ConvertEquations 缓存键，减轻错误复用 OLE。
+        # 与 _fill_inline 一致：优先 LaTeX→OMML，失败再用原卷 source_image，最后斜体 LaTeX。
         span: Optional[Tag] = None
         if latex:
             latex_escaped = html_module.escape(latex, quote=True)
@@ -1243,14 +1033,14 @@ class WordExporter:
     @staticmethod
     def _export_segment_formula_dedupe_enabled() -> bool:
         """
-        默认关闭相邻公式片段去重：仅用 basename 等指纹易把两道不同图/式判成重复而跳过，题干出现漏空或「窜位」观感。
-        若解析确会输出紧邻重复 latex_inline 导致 Word 叠字，再设 EXPORT_SEGMENT_DEDUPE_FORMULAS=1。
+        默认开启相邻公式片段去重：真实卷中解析常出现紧邻重复 latex_inline/image，
+        会导致同一位置叠多层（看起来像公式乱窜/重影）。
+        如需回退旧行为，可设 EXPORT_SEGMENT_DEDUPE_FORMULAS=0 关闭。
         """
-        return (os.environ.get("EXPORT_SEGMENT_DEDUPE_FORMULAS") or "").strip().lower() in (
-            "1",
-            "true",
-            "yes",
-        )
+        raw = (os.environ.get("EXPORT_SEGMENT_DEDUPE_FORMULAS") or "").strip().lower()
+        if raw in ("0", "false", "no", "off"):
+            return False
+        return True
 
     def _add_plain_segment_text(self, paragraph, text: str, font_size_pt: float = 12) -> None:
         """
@@ -1456,7 +1246,7 @@ class WordExporter:
         if element.name == "img":
             self._emit_img_tag(paragraph, element)
             return
-        # math-inline/math-block：MathType（默认）/ OMML（可切换）→ data-image → 斜体回退
+        # math-inline/math-block：OMML → data-image → 斜体回退
         if element.name in ("span", "div"):
             classes = element.get("class") or []
             if isinstance(classes, str):
@@ -1529,7 +1319,7 @@ class WordExporter:
         return t
 
     def _synthetic_math_inline_span(self, latex: str) -> Optional[Tag]:
-        """为纯文本中的 $...$ 构造与 content_html 同结构的 math-inline，供 OLE/OMML 插入。"""
+        """为纯文本中的 $...$ 构造与 content_html 同结构的 math-inline，供 OMML 插入。"""
         raw = (latex or "").strip()
         if not raw:
             return None
@@ -1540,7 +1330,7 @@ class WordExporter:
         return soup.select_one("span.math-inline")
 
     def _append_latex_inline_best_effort(self, paragraph, latex: str, font_size_pt: float) -> None:
-        """与 _fill_inline 相同引擎顺序（EXPORT_FORMULA_PRIORITY）；失败则斜体 LaTeX。"""
+        """与 _fill_inline 相同：仅 OMML；失败则斜体 LaTeX。"""
         span = self._synthetic_math_inline_span(latex)
         if span is None:
             return
@@ -1551,7 +1341,7 @@ class WordExporter:
         run.font.size = Pt(font_size_pt)
 
     def _add_formatted_text(self, paragraph, text: str, font_size_pt: float = 12):
-        """普通文本 + `$...$` 行内公式；公式走 MathType/OMML，与题干同源。"""
+        """普通文本 + `$...$` 行内公式；公式走 OMML，与题干同源。"""
         parts = (text or "").split("$")
         for i, part in enumerate(parts):
             if i % 2 == 0:

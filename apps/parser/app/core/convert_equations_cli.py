@@ -17,6 +17,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from app.core.process_cleanup import optional_kill_winword_after_request
 
 logger = logging.getLogger(__name__)
 
@@ -220,42 +221,46 @@ def run_latex_to_mathtype_payload(
     latex: str, timeout: Optional[int] = None
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """执行 ConvertEquations --latex <latex>，解析 stdout/stderr 中的 JSON。返回 (payload, error_message)。"""
-    exe = get_convert_equations_exe()
-    if exe is None:
-        return None, "exe_not_configured"
-    latex = (latex or "").strip()
-    if not latex:
-        return None, "empty_latex"
-    t = timeout if timeout is not None else int(
-        os.environ.get("EXPORT_CONVERT_EQUATIONS_TIMEOUT", str(_DEFAULT_TIMEOUT))
-    )
-    t = max(5, min(300, t))
     try:
-        run_kw: Dict[str, Any] = {
-            "capture_output": True,
-            "text": True,
-            "encoding": "utf-8",
-            "errors": "replace",
-            "timeout": t,
-        }
-        if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
-            run_kw["creationflags"] = subprocess.CREATE_NO_WINDOW
-        proc = subprocess.run([str(exe), "--latex", latex], **run_kw)
-    except subprocess.TimeoutExpired:
-        return None, "timeout"
-    except OSError as e:
-        logger.warning("ConvertEquations 启动失败: %s", e)
-        return None, str(e)
-    if proc.returncode != 0:
-        err = (proc.stderr or proc.stdout or "").strip()[:500]
-        logger.debug("ConvertEquations 退出码 %s: %s", proc.returncode, err)
-        return None, f"exit_{proc.returncode}"
+        exe = get_convert_equations_exe()
+        if exe is None:
+            return None, "exe_not_configured"
+        latex = (latex or "").strip()
+        if not latex:
+            return None, "empty_latex"
+        t = timeout if timeout is not None else int(
+            os.environ.get("EXPORT_CONVERT_EQUATIONS_TIMEOUT", str(_DEFAULT_TIMEOUT))
+        )
+        t = max(5, min(300, t))
+        try:
+            run_kw: Dict[str, Any] = {
+                "capture_output": True,
+                "text": True,
+                "encoding": "utf-8",
+                "errors": "replace",
+                "timeout": t,
+            }
+            if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+                run_kw["creationflags"] = subprocess.CREATE_NO_WINDOW
+            proc = subprocess.run([str(exe), "--latex", latex], **run_kw)
+        except subprocess.TimeoutExpired:
+            return None, "timeout"
+        except OSError as e:
+            logger.warning("ConvertEquations 启动失败: %s", e)
+            return None, str(e)
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or "").strip()[:500]
+            logger.debug("ConvertEquations 退出码 %s: %s", proc.returncode, err)
+            return None, f"exit_{proc.returncode}"
 
-    combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
-    data = _parse_json_stdout(proc.stdout or "")
-    if not data:
-        data = _parse_json_stdout(combined)
-    if not data:
-        logger.debug("ConvertEquations 无有效 JSON 输出: %s", (proc.stdout or "")[:400])
-        return None, "no_json"
-    return data, None
+        combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        data = _parse_json_stdout(proc.stdout or "")
+        if not data:
+            data = _parse_json_stdout(combined)
+        if not data:
+            logger.debug("ConvertEquations 无有效 JSON 输出: %s", (proc.stdout or "")[:400])
+            return None, "no_json"
+        return data, None
+    finally:
+        # 仅在用户显式开启时清理；用于释放 ConvertEquations 可能遗留的 WINWORD.EXE
+        optional_kill_winword_after_request("convert")
