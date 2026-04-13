@@ -16,7 +16,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from app.core.process_cleanup import optional_kill_winword_after_request
 
 logger = logging.getLogger(__name__)
@@ -233,12 +233,17 @@ def run_latex_to_mathtype_payload(
         )
         t = max(5, min(300, t))
         try:
+            env = os.environ.copy()
+            # 与 ConvertEquations --latex 子进程一致：失败时不杀 WINWORD（仍可由用户显式设为 0 关闭）
+            if (env.get("CONVERTEQUATIONS_CLI_SAFE") or "").strip() == "":
+                env["CONVERTEQUATIONS_CLI_SAFE"] = "1"
             run_kw: Dict[str, Any] = {
                 "capture_output": True,
                 "text": True,
                 "encoding": "utf-8",
                 "errors": "replace",
                 "timeout": t,
+                "env": env,
             }
             if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
                 run_kw["creationflags"] = subprocess.CREATE_NO_WINDOW

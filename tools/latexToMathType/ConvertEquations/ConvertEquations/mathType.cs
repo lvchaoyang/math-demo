@@ -64,7 +64,7 @@ namespace ConvertEquations
 			{
 				m_bDidInit = false;
 				int resultCode = MathTypeSDK.Instance.MTAPIDisconnectMgn();
-				//Console.WriteLine("状态："+resultCode);
+				//Console.WriteLine("????"+resultCode);
 			}
 			return true;
 		}
@@ -947,13 +947,28 @@ namespace ConvertEquations
 
 		public static object path;
 
+		/// <summary>
+		/// 环境变量 CONVERTEQUATIONS_CLI_SAFE 为 1/true/yes 时：失败分支不执行 Restart()（避免杀光 WINWORD/MathType 并自重启进程），供 Parser 子进程调用。
+		/// </summary>
+		public static bool IsCliSafeMode()
+		{
+			var v = Environment.GetEnvironmentVariable("CONVERTEQUATIONS_CLI_SAFE");
+			if (string.IsNullOrEmpty(v)) return false;
+			v = v.Trim();
+			return v == "1" || string.Equals(v, "true", StringComparison.OrdinalIgnoreCase) || string.Equals(v, "yes", StringComparison.OrdinalIgnoreCase);
+		}
+
 		public static void InitWord() {
-			path= GetDataPath(System.Guid.NewGuid().ToString("N") + ".xml");
-			Object Nothing = Missing.Value;
-			wordDocGlobal = wordAppGlobal.Documents.Add(ref Nothing, ref Nothing, ref Nothing, ref Nothing);
-			object format = MSWord.WdSaveFormat.wdFormatFlatXML;
-			wordDocGlobal.SaveAs(ref path, ref format, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing);
-			wordDocGlobal.Close(ref Nothing, ref Nothing, ref Nothing);
+			try
+			{
+				wordAppGlobal.Visible = false;
+				wordAppGlobal.DisplayAlerts = MSWord.WdAlertLevel.wdAlertsNone;
+			}
+			catch (Exception e)
+			{
+				Console.WriteLine(e.Message);
+			}
+			// ?????? InitWord ????????? path????? GetOLEAndWMFFromOneWord / MML ????????? Flat XML???????????????????????????
 		}
 
 		public static void DeInitWord()
@@ -969,7 +984,7 @@ namespace ConvertEquations
 			try
 			{
 				wordAppGlobal.Quit(ref Nothing, ref Nothing, ref Nothing);
-				if (File.Exists(path.ToString())) {
+				if (path != null && File.Exists(path.ToString())) {
 					File.Delete(path.ToString());
 				}
 			}
@@ -1028,7 +1043,11 @@ namespace ConvertEquations
 		}
 
 		public static void Restart() {
-			
+			if (IsCliSafeMode())
+			{
+				try { Console.Error.WriteLine("CONVERTEQUATIONS_CLI_SAFE: Restart suppressed (would kill Word/MathType and respawn)."); } catch { }
+				return;
+			}
 			KillProcess("MathType");
 			killWinWordProcess();
 			Thread.Sleep(5000);
@@ -1038,7 +1057,7 @@ namespace ConvertEquations
 			System.Diagnostics.Process.GetCurrentProcess().Kill();
 
 		}
-		public static void KillProcess(string strProcessesByName)//关闭线程
+		public static void KillProcess(string strProcessesByName)//??????
 		{
 			foreach (Process p in Process.GetProcesses())//GetProcessesByName(strProcessesByName))
 			{
@@ -1065,7 +1084,7 @@ namespace ConvertEquations
 		{
 			try
 			{
-				//获取所有的word进程
+				//?????????word????
 				System.Diagnostics.Process[] processes = System.Diagnostics.Process.GetProcessesByName("WINWORD");
 
 				foreach (System.Diagnostics.Process process in processes)
@@ -1075,7 +1094,7 @@ namespace ConvertEquations
 					Console.WriteLine("kill---" + process.MainWindowTitle);
 					process.Kill();
 
-					//程序休息0.5秒，等待进程关闭
+					//???????0.5???????????
 					System.Threading.Thread.Sleep(500);
 					//}
 					GC.Collect();
@@ -1376,7 +1395,7 @@ namespace ConvertEquations
 				StringBuilder strDest = new StringBuilder(iBufferLength);
 				MTAPI_DIMS dims = new MTAPI_DIMS();
 				string wmfFilePath = GetDataPath(System.Guid.NewGuid().ToString("N") + ".wmf");
-				//Console.WriteLine("路径："+wmfFilePath);
+				//Console.WriteLine("??????"+wmfFilePath);
 				// convert
 			 stat = MathTypeSDK.Instance.MTXFormEqnMgn(
 					int_iType,
@@ -1562,47 +1581,88 @@ namespace ConvertEquations
 		}
 
 		public static MathTypeModel GetOLEAndWMFFromOneWord(String latex) {
+			string workPathStr = null;
 			try {
 				Object Nothing = Missing.Value;
 				byte[] m_bMTEF = GetMTEFBytesFromLatex(latex);
-				wordDocGlobal = wordAppGlobal.Documents.Open(ref path, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing);
+				if (m_bMTEF == null || m_bMTEF.Length < 1) { return null; }
+
+				workPathStr = GetDataPath(Guid.NewGuid().ToString("N") + ".xml");
+				object workPathObj = workPathStr;
+				path = workPathObj;
+
+				wordDocGlobal = wordAppGlobal.Documents.Add(ref Nothing, ref Nothing, ref Nothing, ref Nothing);
+				object format = MSWord.WdSaveFormat.wdFormatFlatXML;
+				wordDocGlobal.SaveAs(ref workPathObj, ref format, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing);
+				wordDocGlobal.Close(ref Nothing, ref Nothing, ref Nothing);
+
+				wordDocGlobal = wordAppGlobal.Documents.Open(ref workPathObj, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing);
 				DealWordFile(m_bMTEF);
 				wordDocGlobal.Close(ref Nothing, ref Nothing, ref Nothing);
 				MathTypeModel mathType = readMathTypeDontDelete();
-				//byte[] wmf = Convert.FromBase64String(mathType.wmf);
 				Console.WriteLine(latex);
-				//WriteByteToFile(wmf, "E://" + latex + ".wmf");
 				return mathType;
 			}
 			catch (Exception e)
 			{
 				Console.WriteLine(e.Message);
-				DeInitWord();
-				Restart();
+				if (!IsCliSafeMode()) {
+					DeInitWord();
+					Restart();
+				} else {
+					try { Console.Error.WriteLine("CONVERTEQUATIONS_CLI_SAFE: " + e.Message); } catch { }
+				}
+			}
+			finally
+			{
+				if (!string.IsNullOrEmpty(workPathStr))
+				{
+					try { if (File.Exists(workPathStr)) File.Delete(workPathStr); } catch { }
+				}
 			}
 			return null;
 		}
 
 		public static MathTypeModel GetOLEAndWMFFromOneWordMML(String mml)
 		{
+			string workPathStr = null;
 			try
 			{
 				Object Nothing = Missing.Value;
 				byte[] m_bMTEF = GetMTEFBytesFromMML(mml);
-				wordDocGlobal = wordAppGlobal.Documents.Open(ref path, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing);
+				if (m_bMTEF == null || m_bMTEF.Length < 1) { return null; }
+
+				workPathStr = GetDataPath(Guid.NewGuid().ToString("N") + ".xml");
+				object workPathObj = workPathStr;
+				path = workPathObj;
+
+				wordDocGlobal = wordAppGlobal.Documents.Add(ref Nothing, ref Nothing, ref Nothing, ref Nothing);
+				object format = MSWord.WdSaveFormat.wdFormatFlatXML;
+				wordDocGlobal.SaveAs(ref workPathObj, ref format, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing);
+				wordDocGlobal.Close(ref Nothing, ref Nothing, ref Nothing);
+
+				wordDocGlobal = wordAppGlobal.Documents.Open(ref workPathObj, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing, ref Nothing);
 				DealWordFile(m_bMTEF);
 				wordDocGlobal.Close(ref Nothing, ref Nothing, ref Nothing);
 				MathTypeModel mathType = readMathTypeDontDelete();
-				//byte[] wmf = Convert.FromBase64String(mathType.wmf);
-				//Console.WriteLine(mml);
-				//WriteByteToFile(wmf, "E://mml.wmf");
 				return mathType;
 			}
 			catch (Exception e)
 			{
 				Console.WriteLine(e.Message);
-				DeInitWord();
-				Restart();
+				if (!IsCliSafeMode()) {
+					DeInitWord();
+					Restart();
+				} else {
+					try { Console.Error.WriteLine("CONVERTEQUATIONS_CLI_SAFE: " + e.Message); } catch { }
+				}
+			}
+			finally
+			{
+				if (!string.IsNullOrEmpty(workPathStr))
+				{
+					try { if (File.Exists(workPathStr)) File.Delete(workPathStr); } catch { }
+				}
 			}
 			return null;
 		}
@@ -1625,8 +1685,12 @@ namespace ConvertEquations
 			catch (Exception e)
 			{
 				Console.WriteLine(e.Message);
-				DeInitWord();
-				Restart();
+				if (!IsCliSafeMode()) {
+					DeInitWord();
+					Restart();
+				} else {
+					try { Console.Error.WriteLine("CONVERTEQUATIONS_CLI_SAFE: DealWordFile " + e.Message); } catch { }
+				}
 			}
 		}
 

@@ -37,6 +37,8 @@ namespace ConvertEquations
                 }
                 try
                 {
+                    // 子进程模式：禁止失败时杀光 Word/MathType 并自重启（见 mathType.OLE_WMF.IsCliSafeMode）
+                    Environment.SetEnvironmentVariable("CONVERTEQUATIONS_CLI_SAFE", "1");
                     OLE_WMF.InitWord();
                     var payload = "{\"latex\":\"" + EscapeJson(latexRaw) + "\"}";
                     var result = latexToMathType(payload);
